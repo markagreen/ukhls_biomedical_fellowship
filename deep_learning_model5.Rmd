@@ -1,0 +1,1334 @@
+---
+title: "Predicting future ill health using deep learning: Model 5 HTN"
+output: html_notebook
+author: Mark A Green
+---
+
+Ok, let's try whether they developed hypertension. First, let's set up R and load in the data.
+
+```{r message=FALSE, warning=FALSE}
+# source("./load_clean_survey.R") # Script loads and cleans the data
+source("./load_var_names.R") # Loads variable names by domain
+library(data.table)
+library(keras)
+ukhls <- fread("../../../../Desktop/Green_UKHLS/ukhls_cleaned.csv") # Load cleaned data
+
+```
+
+## Model 4: Predicting whether had hypertension 5 years after baseline for individuals who were not hypertensive at baseline
+
+The outcome variable we will look at is whether an individual reported that they had hypertension (yes (1) or no (0)) 5 years after baseline only for individuals without it at baseline. 
+
+Let's partition the data and have a look at our analytical sample.
+
+```{r}
+model5_data <- ukhls[ukhls$wave == 2 & !is.na(ukhls$hcondn16) & ukhls$hcond16 == 0] # Subset data
+table(model5_data$hcondn16) # Print outcome data to look at our outcome variable
+
+```
+
+Fairly low numbers here which are less useful. 24% of people reported a value of 1. 
+
+###Standardise variables
+
+First, we must normalise our inputs so that they have a mean of 0 and a standard deviation of 1. We will also keep the same train/test split of 75/25. 
+
+```{r}
+# Split data into train and test samples
+library(caret)
+set.seed(250388)
+train_split <- createDataPartition(model4_data$health_5yr, p = 0.75, list = FALSE, times = 1) # Split 80/20
+saveRDS(train_split, file = "./Data split files/train_split_health5yr_model4.rds") # Save
+train_split <- readRDS(file = "./Data split files/train_split_health5yr_model4.rds") # Load
+
+train <- model4_data[train_split,] # Training data
+test <- model4_data[-train_split,] # Test data
+
+# Split data into inputs (explanatory variables) and labels (outputs/outcomes)
+train_inputs <- train[, all_vars, with = FALSE] # Training data inputs
+train_labels <- train[,"health_5yr"] # Training data labels
+
+test_inputs <- test[, all_vars, with = FALSE] # Test data inputs
+test_labels <- test[,"health_5yr"] # Test data labels
+rm(train, test)
+
+# Normalise the data
+mean <- apply(train_inputs, 2, mean) # Calcuate the mean of each feature
+std <- apply(train_inputs, 2, sd) # Calculate the standard deviation of each feature
+train_data <- as.data.table(scale(train_inputs, center = mean, scale = std)) # Scale training data
+test_data <- as.data.table(scale(test_inputs, center = mean, scale = std)) # Scale test data
+rm(train_inputs, test_inputs)
+
+```
+
+###Variable Selection
+
+Next, we will use LASSO logistic regression again to reduce the number of features.
+
+####Personal
+
+We are starting with **8** variables.
+
+```{r}
+library(glmnet) # Package for LASSO in generalisaed models
+x <- model.matrix(train_labels$health_5yr ~ ., train_data[, personal, with=F]) # Convert data to matrix format (specify outcome)
+#y <- train_labels$health_5yr # store outcome variable as numeric
+
+# Using k-fold cross-validation, it will perform a grid search to find the optimal value of lambda. 
+lambdas = NULL # Create blank object to store results
+for (i in 1:100) # How many times to loop through
+{
+   fit <- cv.glmnet(x, train_labels$health_5yr, alpha = 1, family = "binomial", nfolds = 10) # Run LASSO (alpha specifies is LASSO). The default loss function here is the deviance - you can also call AUC, misclassification error and mean absolute error for the logistic model
+   errors = data.frame(fit$lambda,fit$cvm) # Store mean cross-validation error 
+   lambdas <- rbind(lambdas,errors) # Join lambda values to error terms from above
+}
+# Take mean cvm for each lambda value
+lambdas <- aggregate(lambdas[, 2], list(lambdas$fit.lambda), mean)
+
+# Select the best one
+bestindex = which(lambdas[2]==min(lambdas[2]))
+bestlambda = lambdas[bestindex,1]
+
+# Run LASSO once more with it optimal solution
+fit_per <- glmnet(x, train_labels$health_5yr, alpha = 1, family = "binomial", lambda = bestlambda)
+
+# Print coefficients
+coef(fit_per,s="lambda_min") # Minimum lambda - optimal model
+
+# Store variables from solution (by minimum and 1se metrics)
+tmp_coeffs <- coef(fit_per, s = "lambda.min") # Store coefficients
+hold <- data.frame(name_min = tmp_coeffs@Dimnames[[1]][tmp_coeffs@i + 1], coef_min = tmp_coeffs@x) # Change object from sparse matrix to data.frame
+lasso_personal_vars <- as.character(hold$name[2:nrow(hold)]) # Store just coefficient names and drop intercept
+lasso_personal_vars # Print
+rm(hold, tmp_coeffs)
+
+```
+
+So our model is the set of predictors that is associated with the minimum value of $\lambda$ (across all of our solutions). In this case, it reduces the number of variables from 8 to **4**. The results are slightly different to what we have seen in past analyses - age and marital status remain, but we see the inclusion of sex and mothers country of birth as well. 
+
+We take these four variables forward to our deep learning algorithm.
+
+####Social
+
+There were initially **73** variables.
+
+```{r}
+x <- model.matrix(train_labels$health_5yr ~ ., train_data[, ses, with=F]) # Convert data to matrix format (specify outcome)
+
+# Using k-fold cross-validation, it will perform a grid search to find the optimal value of lambda. 
+lambdas = NULL # Create blank object to store results
+for (i in 1:100) # How many times to loop through
+{
+   fit <- cv.glmnet(x, train_labels$health_5yr, alpha = 1, family = "binomial", nfolds = 10) # Run LASSO (alpha specifies is LASSO). The default loss function here is the deviance - you can also call AUC, misclassification error and mean absolute error for the logistic model
+   errors = data.frame(fit$lambda,fit$cvm) # Store mean cross-validation error 
+   lambdas <- rbind(lambdas,errors) # Join lambda values to error terms from above
+}
+# Take mean cvm for each lambda value
+lambdas <- aggregate(lambdas[, 2], list(lambdas$fit.lambda), mean)
+
+# Select the best one
+bestindex = which(lambdas[2]==min(lambdas[2]))
+bestlambda = lambdas[bestindex,1]
+
+# Run LASSO once more with it optimal solution
+fit_ses <- glmnet(x, train_labels$health_5yr, alpha = 1, family = "binomial", lambda = bestlambda)
+
+# Print coefficients
+coef(fit_ses,s="lambda_min") # Minimum lambda - optimal model
+
+# Store variables from solution (by minimum and 1se metrics)
+tmp_coeffs <- coef(fit_ses, s = "lambda.min") # Store coefficients
+hold <- data.frame(name_min = tmp_coeffs@Dimnames[[1]][tmp_coeffs@i + 1], coef_min = tmp_coeffs@x) # Change object from sparse matrix to data.frame
+lasso_ses_vars <- as.character(hold$name[2:nrow(hold)]) # Store just coefficient names and drop intercept
+lasso_ses_vars # Print
+rm(hold, tmp_coeffs)
+
+```
+
+
+The LASSO has cut the number of variables by quite a lot here - from 73 to **42**. We can summarise the results by sub-domain:
+
+* Housing (6 to 5) - All other than whether the house has central heating.
+* Education (1 to 1) - One variable (highest education qualification) and it remains
+* Income (17 to 12) - If they had problems paying for their housing or council tax, most of the benefits measures (bar pension and unemployment), if receive any income from dividends, subjective financial status (but not gross income), and if they save.
+* Occupation (21 to 6) - Big cull here compared to other models. If their job was permanent, the social class of that job, if they had a second job, the job security they had, if had any automony over their tasks and if feel depressed about their job all remain.
+* Parental (6 to 3) - Mothers education, if either parnet was employed when aged 14.
+* Relative poverty (16 to 11) - Most are retained and a good mixture of things.
+* Social capital (6 to 4) - All bar whether they volunteer and the party they feel closest to are kept. 
+
+####Heath/wellbeing
+
+There were **55** variables initially.
+
+```{r}
+x <- model.matrix(train_labels$health_5yr~.,train_data[, health, with=F]) # Convert data to matrix format (specify outcome)
+
+# Using k-fold cross-validation, it will perform a grid search to find the optimal value of lambda. 
+lambdas = NULL # Create blank object to store results
+for (i in 1:100) # How many times to loop through
+{
+   fit <- cv.glmnet(x, train_labels$health_5yr, alpha = 1, family = "binomial", nfolds = 10) # Run LASSO (alpha specifies is LASSO). The default loss function here is the deviance - you can also call AUC, misclassification error and mean absolute error for the logistic model
+   errors = data.frame(fit$lambda,fit$cvm) # Store mean cross-validation error 
+   lambdas <- rbind(lambdas,errors) # Join lambda values to error terms from above
+}
+# Take mean cvm for each lambda value
+lambdas <- aggregate(lambdas[, 2], list(lambdas$fit.lambda), mean)
+
+# Select the best one
+bestindex = which(lambdas[2]==min(lambdas[2]))
+bestlambda = lambdas[bestindex,1]
+
+# Run LASSO once more with it optimal solution
+fit_health <- glmnet(x, train_labels$health_5yr, alpha = 1, family = "binomial", lambda = bestlambda)
+
+# Print coefficients
+coef(fit_health,s="lambda_min") # Minimum lambda - optimal model
+
+# Store variables from solution (by minimum and 1se metrics)
+tmp_coeffs <- coef(fit_health, s = "lambda.min") # Store coefficients
+hold <- data.frame(name_min = tmp_coeffs@Dimnames[[1]][tmp_coeffs@i + 1], coef_min = tmp_coeffs@x) # Change object from sparse matrix to data.frame
+lasso_health_vars <- as.character(hold$name[2:nrow(hold)]) # Store just coefficient names and drop intercept
+lasso_health_vars # Print
+rm(hold, tmp_coeffs)
+
+```
+
+A greater number of variables were excluded than compared to model 3 leaving a total of **18** variables left. What remains is fairly scant - half of the health conditions remain, as do spending patterns on food eaten out and alcohol. None of the other diet variables remain, with only three physical activity variables being kept. One smoking (number of cigarettes) is kept. Body characteristics remaining are height and waist only. One of the blood pressure and lung capcacity variables are kept. Only three wellbeing variables remain.
+
+####Biomarkers
+
+**20** variables were initially selected.
+
+```{r}
+x <- model.matrix(train_labels$health_5yr~.,train_data[,biomarker,with=FALSE]) # Convert data to matrix format (specify outcome)
+
+# Using k-fold cross-validation, it will perform a grid search to find the optimal value of lambda. 
+lambdas = NULL # Create blank object to store results
+for (i in 1:100) # How many times to loop through
+{
+   fit <- cv.glmnet(x,train_labels$health_5yr, alpha = 1, family = "binomial", nfolds = 10) # Run LASSO (alpha specifies is LASSO). The default loss function here is the deviance - you can also call AUC, misclassification error and mean absolute error for the logistic model
+   errors = data.frame(fit$lambda,fit$cvm) # Store mean cross-validation error 
+   lambdas <- rbind(lambdas,errors) # Join lambda values to error terms from above
+}
+# Take mean cvm for each lambda value
+lambdas <- aggregate(lambdas[, 2], list(lambdas$fit.lambda), mean)
+
+# Select the best one
+bestindex = which(lambdas[2]==min(lambdas[2]))
+bestlambda = lambdas[bestindex,1]
+
+# Run LASSO once more with it optimal solution
+fit_biom <- glmnet(x, train_labels$health_5yr, alpha = 1, family = "binomial", lambda = bestlambda)
+
+# Print coefficients
+coef(fit_biom,s="lambda_min") # Minimum lambda - optimal model
+
+# Store variables from solution (by minimum and 1se metrics)
+tmp_coeffs <- coef(fit_biom, s = "lambda.min") # Store coefficients
+hold <- data.frame(name_min = tmp_coeffs@Dimnames[[1]][tmp_coeffs@i + 1], coef_min = tmp_coeffs@x) # Change object from sparse matrix to data.frame
+lasso_biom_vars <- as.character(hold$name[2:nrow(hold)]) # Store just coefficient names and drop intercept
+lasso_biom_vars # Print
+rm(hold, tmp_coeffs)
+
+```
+
+Only 3 are dropped and these are all from the liver subdomain.
+
+####Genetic
+
+TBC
+
+###Model development
+
+Now that we have got to the data normalised and features selected, we can start with building our predictive models. This section will initially split analyses by data types, before combining them together.
+
+####Personal data
+
+We first begin through building a baseline model for what we can compare the deep learning results to. A common classification and epidemiological tool for understanding the predictors of binary data is logistic regression. Given that the approach is fairly simple and widely utilised, it provides a good starting point to compare between models.
+
+```{r}
+source("./load_feature_selected_model4.R") # If have not run all previous lines, have saved the list of variables so call that
+library(caret) # For model fit summary statistics
+library(e1071)
+
+# Logistic regression model for training data
+logit_train_per <- glm(train_labels$health_5yr ~ ., data = train_data[,lasso_personal_vars,with=F], family = binomial(link = "logit")) # the . means all columns not stated in the formula
+
+# Evaluate model performance
+test.probs <- predict(logit_train_per, test_data[,lasso_personal_vars,with=F], type = "response") # Predicted probabilities based on logistic regression model on test data
+# Recode values as 1 if >=0.5 and 0 if <0.5
+pred.logit <- rep(0,length(test.probs)) # Set all values as 0
+pred.logit[test.probs>=0.5] <- 1 # recode those with predicted probability >=0.5 as 1
+pred.logit <- as.factor(pred.logit) # convert to factor
+levels(pred.logit) <- c(levels(pred.logit),0,1) # Does not predict any 1s as poor model fit, so add in as level to factor
+
+# Model fit statistics
+cm <- confusionMatrix(as.factor(test_labels$health_5yr), as.factor(pred.logit)) 
+
+# Store results in clean format
+lrfit_model4 <- as.data.frame(as.matrix(cm, what = "overall")) # Accuracy
+lrfit_model4 <- rbind(lrfit_model4, as.data.frame(as.matrix(cm, what = "classes"))) # Other metrics
+colnames(lrfit_model4) <- c("Personal") # Rename column 
+
+# Calcuate AUC
+library(ROCR)
+pr <- prediction(test.probs, test_labels$health_5yr) # calcuate predictions again!
+auc <- performance(pr, measure = "auc") # Calculate AUC
+auc <- auc@y.values[[1]] # Extract only AUC value 
+lrfit_model4[19,1] <- auc # Join onto table of results
+rownames(lrfit_model4)[19] <- "AUC" # Edit row name
+lrfit_model4 <- round(lrfit_model4, digits=4) # Round numbers off for presentation
+write.csv(lrfit_model4, "./Model fit statistics/lrfit_model4.csv") # Save
+lrfit_model4 # Print
+
+```
+
+Pretty good!
+
+We now move onto the deep learning model using k-fold cross validation.
+
+```{r}
+# Convert data to expected TensorFlow format
+dm_train <- as.matrix(train_data[,lasso_personal_vars,with=F]) # inputs
+train_y <- train_labels$health_5yr # labels
+
+# Because we will need to instantiate the same model multiple times, we use a function to construct it.
+build_model <- function() {
+  
+  # Define network structure
+  model4_per <- keras_model_sequential() %>% # State is sequential model (i.e. no reinforced learning)
+    layer_dense(units = 16, activation = "relu", kernel_regularizer = regularizer_l1(0.001)) %>% # First layer. We include l1 regularisation to minimise potential for overfitting, although its affect is small. L1 regularisation was selected merely because it is the same as the LASSO regression.
+    layer_dense(units = 1, activation = "sigmoid") # Output layer - generate a predicted prob
+
+  model4_per %>% compile(
+    optimizer = "rmsprop", # Optimiser - how the network will update itself during the training phase - in our case we will use Gradient Descent since has been shown to be most effective and efficient (this is one algorithm for it)
+    loss = "binary_crossentropy", # Best choice for dealing with probabilities and binary labels. Crossentropy loss function measures the difference between the probability and label values.
+    metrics = c("accuracy") # Evaluate model based on accuracy (% of correctly classified labels)
+  )
+
+}
+
+# k-fold validation (k=4)
+k <- 4 # Define k
+indices <- sample(1:nrow(train_data))
+folds <- cut(1:length(indices), breaks = k, labels = FALSE) # Identify how to split data into k folds
+
+num_epochs <- 10 # Number of epochs
+all_scores <- c()
+for (i in 1:k) {
+  
+  cat("processing fold #", i, "\n") # print progress
+  
+  # Prepare the validation data from partition #k
+  val_indices <- which(folds == i, arr.ind = TRUE) 
+  val_inputs <- dm_train[val_indices,]
+  val_labels <- train_y[val_indices]
+  
+  # Prepare the training data using data from all other partitions
+  partial_train_inputs <- dm_train[-val_indices,]
+  partial_train_labels <- train_y[-val_indices]
+  
+  # Build the Keras model (already compiled previously)
+  model4_per <- build_model()
+  
+  # Train the model (in silent mode: verbose=0)
+  model4_per %>% fit(partial_train_inputs, partial_train_labels,
+                epochs = num_epochs, batch_size = 128, verbose = 0)
+                
+  # Evaluate the model on the validation data
+  results <- model4_per %>% evaluate(val_inputs, val_labels, verbose = 0)
+  
+  # Save each epoch score/information
+  all_scores <- c(all_scores, results$acc)
+  
+} 
+
+all_scores # print all values
+mean(all_scores) # print mean value
+
+# model1_per %>% fit(dm_train, y, epochs = 10, batch_size = 128)
+# dm_test <- as.matrix(test_data[,lasso_personal_vars,with=F])
+# test_y <- test_labels$health_5yr
+
+```
+
+The above model is fairly simple - it actually isn't deep at all but a shallow neural net.
+
+With the model developed, we can then evaluate how good it is on the test data.
+
+```{r}
+dm_test <- as.matrix(test_data[,lasso_personal_vars,with=F])
+test_y <- test_labels$health_5yr 
+metrics <- model4_per %>% evaluate(dm_test, test_y, batch_size = 128, verbose = 0)
+metrics
+
+```
+
+There isn't any improvement over the logistic regression model This may not be unsurpising since we there are such few predictors included in the model, and there is little depth to the model. Only so much information can be extracted and more complex layers cannot begin to tease out many interactions between variables since there are few.
+
+We can also calcuate the other metrics we used in the logstic regression model earlier.
+
+```{r}
+# Predict outcomes
+pred_y <- model4_per %>% predict(dm_test, batch_size=128, verbose=0)
+pred.nn <- rep(0,length(pred_y))
+pred.nn[pred_y>=0.5] <- 1
+pred.nn <- as.factor(pred.nn) # convert to factor
+levels(pred.nn) <- c(levels(pred.nn),0,1) # Does not predict any 1s as poor model fit, so add in as level to factor
+cm2 <- confusionMatrix(as.factor(test_y), as.factor(pred.nn)) # Calculate model fit measures
+
+# Store results in clean format
+nnfit_model4 <- as.data.frame(as.matrix(cm2, what = "overall")) # Accuracy
+nnfit_model4 <- rbind(nnfit_model4, as.data.frame(as.matrix(cm2, what = "classes"))) # Other metrics
+colnames(nnfit_model4) <- c("Personal") # Rename column 
+
+# Calcuate AUC
+library(ROCR)
+pr <- prediction(pred_y, test_y) # calcuate predictions again!
+auc <- performance(pr, measure = "auc") # Calculate AUC
+auc <- auc@y.values[[1]] # Extract only AUC value 
+nnfit_model4[19,1] <- auc # Join onto table of results
+rownames(nnfit_model4)[19] <- "AUC" # Edit row name
+nnfit_model4 <- round(nnfit_model4, digits=4) # Round numbers off for presentation
+write.csv(nnfit_model4, "./Model fit statistics/nnfit_model4.csv") # Save
+nnfit_model4 # Print
+
+```
+
+Doesn't look good!
+
+####Social data
+
+Next up is our social data.
+
+```{r}
+source("./load_feature_selected_model4.R") # If have not run all previous lines, have saved the list of variables so call that
+library(caret) # For model fit summary statistics
+library(e1071)
+
+# Logistic regression model for training data
+logit_train_per <- glm(train_labels$health_5yr ~ ., data = train_data[,lasso_ses_vars,with=F], family = binomial(link = "logit")) # the . means all columns not stated in the formula
+
+# Evaluate model performance
+test.probs <- predict(logit_train_per, test_data[,lasso_ses_vars,with=F], type = "response") # Predicted probabilities based on logistic regression model on test data
+# Recode values as 1 if >=0.5 and 0 if <0.5
+pred.logit <- rep(0,length(test.probs)) # Set all values as 0
+pred.logit[test.probs>=0.5] <- 1 # recode those with predicted probability >=0.5 as 1
+pred.logit <- as.factor(pred.logit) # convert to factor
+levels(pred.logit) <- c(levels(pred.logit),0,1) # Does not predict any 1s as poor model fit, so add in as level to factor
+
+# Model fit statistics
+cm <- confusionMatrix(as.factor(test_labels$health_5yr), as.factor(pred.logit)) 
+
+# Store results in clean format
+hold <- as.data.frame(as.matrix(cm, what = "overall")) # Accuracy
+hold <- rbind(hold, as.data.frame(as.matrix(cm, what = "classes"))) # Other metrics
+colnames(hold) <- c("Social") # Rename column 
+
+# Calcuate AUC
+library(ROCR)
+pr <- prediction(test.probs, test_labels$health_5yr) # calcuate predictions again!
+auc <- performance(pr, measure = "auc") # Calculate AUC
+auc <- auc@y.values[[1]] # Extract only AUC value 
+hold[19,1] <- auc # Join onto table of results
+rownames(hold)[19] <- "AUC" # Edit row name
+hold <- round(hold, digits=4) # Round numbers off for presentation
+lrfit_model4 <- cbind(lrfit_model4, hold) # Join to original table
+rm(hold)
+
+write.csv(lrfit_model4, "./Model fit statistics/lrfit_model4.csv") # Save
+lrfit_model4 # Print
+
+```
+
+Not really any different! We now move onto the deep learning model using k-fold cross validation.
+
+```{r}
+# Convert data to expected TensorFlow format
+dm_train <- as.matrix(train_data[,lasso_ses_vars,with=F]) # inputs
+train_y <- train_labels$health_5yr # labels
+
+# Because we will need to instantiate the same model multiple times, we use a function to construct it.
+build_model <- function() {
+  
+  # Define network structure
+  model4_ses <- keras_model_sequential() %>% # State is sequential model (i.e. no reinforced learning)
+    layer_dense(units = 16, activation = "relu", kernel_regularizer = regularizer_l1(0.001)) %>% # First layer. We include l1 regularisation to minimise potential for overfitting, although its affect is small. L1 regularisation was selected merely because it is the same as the LASSO regression.
+    layer_dense(units = 1, activation = "sigmoid") # Output layer - generate a predicted prob
+
+  model4_ses %>% compile(
+    optimizer = "rmsprop", # Optimiser - how the network will update itself during the training phase - in our case we will use Gradient Descent since has been shown to be most effective and efficient (this is one algorithm for it)
+    loss = "binary_crossentropy", # Best choice for dealing with probabilities and binary labels. Crossentropy loss function measures the difference between the probability and label values.
+    metrics = c("accuracy") # Evaluate model based on accuracy (% of correctly classified labels)
+  )
+
+}
+
+# k-fold validation (k=4)
+k <- 4 # Define k
+indices <- sample(1:nrow(train_data))
+folds <- cut(1:length(indices), breaks = k, labels = FALSE) # Identify how to split data into k folds
+
+num_epochs <- 10 # Number of epochs
+all_scores <- c()
+for (i in 1:k) {
+  
+  cat("processing fold #", i, "\n") # print progress
+  
+  # Prepare the validation data from partition #k
+  val_indices <- which(folds == i, arr.ind = TRUE) 
+  val_inputs <- dm_train[val_indices,]
+  val_labels <- train_y[val_indices]
+  
+  # Prepare the training data using data from all other partitions
+  partial_train_inputs <- dm_train[-val_indices,]
+  partial_train_labels <- train_y[-val_indices]
+  
+  # Build the Keras model (already compiled previously)
+  model4_ses <- build_model()
+  
+  # Train the model (in silent mode: verbose=0)
+  model4_ses %>% fit(partial_train_inputs, partial_train_labels,
+                epochs = num_epochs, batch_size = 128, verbose = 0)
+                
+  # Evaluate the model on the validation data
+  results <- model4_ses %>% evaluate(val_inputs, val_labels, verbose = 0)
+  
+  # Save each epoch score/information
+  all_scores <- c(all_scores, results$acc)
+  
+} 
+
+all_scores # print all values
+mean(all_scores) # print mean value
+
+# model1_per %>% fit(dm_train, y, epochs = 10, batch_size = 128)
+# dm_test <- as.matrix(test_data[,lasso_personal_vars,with=F])
+# test_y <- test_labels$health_5yr
+
+```
+
+
+The above model is fairly simple - it actually isn't deep at all but a shallow neural net.
+
+With the model developed, we can then evaluate how good it is on the test data.
+
+```{r}
+dm_test <- as.matrix(test_data[,lasso_ses_vars,with=F])
+test_y <- test_labels$health_5yr 
+metrics <- model4_ses %>% evaluate(dm_test, test_y, batch_size = 128, verbose = 0)
+metrics
+
+```
+
+There isn't any improvement over the logistic regression model This may not be unsurpising since we there are such few predictors included in the model, and there is little depth to the model. Only so much information can be extracted and more complex layers cannot begin to tease out many interactions between variables since there are few.
+
+We can also calcuate the other metrics we used in the logstic regression model earlier.
+
+```{r}
+# Predict outcomes
+pred_y <- model4_ses %>% predict(dm_test, batch_size=128, verbose=0)
+pred.nn <- rep(0,length(pred_y))
+pred.nn[pred_y>=0.5] <- 1
+pred.nn <- as.factor(pred.nn) # convert to factor
+levels(pred.nn) <- c(levels(pred.nn),0,1) # Does not predict any 1s as poor model fit, so add in as level to factor
+cm2 <- confusionMatrix(as.factor(test_y), as.factor(pred.nn)) # Calculate model fit measures
+
+# Store results in clean format
+hold <- as.data.frame(as.matrix(cm2, what = "overall")) # Accuracy
+hold <- rbind(hold, as.data.frame(as.matrix(cm2, what = "classes"))) # Other metrics
+colnames(hold) <- c("Social") # Rename column 
+
+# Calcuate AUC
+library(ROCR)
+pr <- prediction(pred_y, test_y) # calcuate predictions again!
+auc <- performance(pr, measure = "auc") # Calculate AUC
+auc <- auc@y.values[[1]] # Extract only AUC value 
+hold[19,1] <- auc # Join onto table of results
+rownames(hold)[19] <- "AUC" # Edit row name
+hold <- round(hold, digits=4) # Round numbers off for presentation
+nnfit_model4 <- cbind(nnfit_model4, hold) # Join to original table
+rm(hold)
+
+write.csv(nnfit_model4, "./Model fit statistics/nnfit_model4.csv") # Save
+nnfit_model4 # Print
+
+```
+
+Looks a lot better!
+
+####Health/wellbeing
+
+Next up is our health data.
+
+```{r}
+source("./load_feature_selected_model4.R") # If have not run all previous lines, have saved the list of variables so call that
+library(caret) # For model fit summary statistics
+library(e1071)
+
+# Logistic regression model for training data
+logit_train_per <- glm(train_labels$health_5yr ~ ., data = train_data[,lasso_health_vars,with=F], family = binomial(link = "logit")) # the . means all columns not stated in the formula
+
+# Evaluate model performance
+test.probs <- predict(logit_train_per, test_data[,lasso_health_vars,with=F], type = "response") # Predicted probabilities based on logistic regression model on test data
+# Recode values as 1 if >=0.5 and 0 if <0.5
+pred.logit <- rep(0,length(test.probs)) # Set all values as 0
+pred.logit[test.probs>=0.5] <- 1 # recode those with predicted probability >=0.5 as 1
+pred.logit <- as.factor(pred.logit) # convert to factor
+levels(pred.logit) <- c(levels(pred.logit),0,1) # Does not predict any 1s as poor model fit, so add in as level to factor
+
+# Model fit statistics
+cm <- confusionMatrix(as.factor(test_labels$health_5yr), as.factor(pred.logit)) 
+
+# Store results in clean format
+hold <- as.data.frame(as.matrix(cm, what = "overall")) # Accuracy
+hold <- rbind(hold, as.data.frame(as.matrix(cm, what = "classes"))) # Other metrics
+colnames(hold) <- c("Health") # Rename column 
+
+# Calcuate AUC
+library(ROCR)
+pr <- prediction(test.probs, test_labels$health_5yr) # calcuate predictions again!
+auc <- performance(pr, measure = "auc") # Calculate AUC
+auc <- auc@y.values[[1]] # Extract only AUC value 
+hold[19,1] <- auc # Join onto table of results
+rownames(hold)[19] <- "AUC" # Edit row name
+hold <- round(hold, digits=4) # Round numbers off for presentation
+lrfit_model4 <- cbind(lrfit_model4, hold) # Join to original table
+rm(hold)
+
+write.csv(lrfit_model4, "./Model fit statistics/lrfit_model4.csv") # Save
+lrfit_model4 # Print
+
+```
+
+Excellent! We now move onto the deep learning model using k-fold cross validation.
+
+```{r}
+# Convert data to expected TensorFlow format
+dm_train <- as.matrix(train_data[,lasso_health_vars,with=F]) # inputs
+train_y <- train_labels$health_5yr # labels
+
+# Because we will need to instantiate the same model multiple times, we use a function to construct it.
+build_model <- function() {
+  
+  # Define network structure
+  model4_health <- keras_model_sequential() %>% # State is sequential model (i.e. no reinforced learning)
+    layer_dense(units = 16, activation = "relu", kernel_regularizer = regularizer_l1(0.001)) %>% # First layer. We include l1 regularisation to minimise potential for overfitting, although its affect is small. L1 regularisation was selected merely because it is the same as the LASSO regression.
+    layer_dense(units = 1, activation = "sigmoid") # Output layer - generate a predicted prob
+
+  model4_health %>% compile(
+    optimizer = "rmsprop", # Optimiser - how the network will update itself during the training phase - in our case we will use Gradient Descent since has been shown to be most effective and efficient (this is one algorithm for it)
+    loss = "binary_crossentropy", # Best choice for dealing with probabilities and binary labels. Crossentropy loss function measures the difference between the probability and label values.
+    metrics = c("accuracy") # Evaluate model based on accuracy (% of correctly classified labels)
+  )
+
+}
+
+# k-fold validation (k=4)
+k <- 4 # Define k
+indices <- sample(1:nrow(train_data))
+folds <- cut(1:length(indices), breaks = k, labels = FALSE) # Identify how to split data into k folds
+
+num_epochs <- 10 # Number of epochs
+all_scores <- c()
+for (i in 1:k) {
+  
+  cat("processing fold #", i, "\n") # print progress
+  
+  # Prepare the validation data from partition #k
+  val_indices <- which(folds == i, arr.ind = TRUE) 
+  val_inputs <- dm_train[val_indices,]
+  val_labels <- train_y[val_indices]
+  
+  # Prepare the training data using data from all other partitions
+  partial_train_inputs <- dm_train[-val_indices,]
+  partial_train_labels <- train_y[-val_indices]
+  
+  # Build the Keras model (already compiled previously)
+  model4_health <- build_model()
+  
+  # Train the model (in silent mode: verbose=0)
+  model4_health %>% fit(partial_train_inputs, partial_train_labels,
+                epochs = num_epochs, batch_size = 128, verbose = 0)
+                
+  # Evaluate the model on the validation data
+  results <- model4_health %>% evaluate(val_inputs, val_labels, verbose = 0)
+  
+  # Save each epoch score/information
+  all_scores <- c(all_scores, results$acc)
+  
+} 
+
+all_scores # print all values
+mean(all_scores) # print mean value
+
+# model1_per %>% fit(dm_train, y, epochs = 10, batch_size = 128)
+# dm_test <- as.matrix(test_data[,lasso_personal_vars,with=F])
+# test_y <- test_labels$health_5yr
+
+```
+
+
+The above model is fairly simple - it actually isn't deep at all but a shallow neural net.
+
+With the model developed, we can then evaluate how good it is on the test data.
+
+```{r}
+dm_test <- as.matrix(test_data[,lasso_health_vars,with=F])
+test_y <- test_labels$health_5yr 
+metrics <- model4_health %>% evaluate(dm_test, test_y, batch_size = 128, verbose = 0)
+metrics
+
+```
+
+There isn't any improvement over the logistic regression model. This may not be unsurpising since we there are such few predictors included in the model, and there is little depth to the model. Only so much information can be extracted and more complex layers cannot begin to tease out many interactions between variables since there are few.
+
+We can also calcuate the other metrics we used in the logstic regression model earlier.
+
+```{r}
+# Predict outcomes
+pred_y <- model4_health %>% predict(dm_test, batch_size=128, verbose=0)
+pred.nn <- rep(0,length(pred_y))
+pred.nn[pred_y>=0.5] <- 1
+pred.nn <- as.factor(pred.nn) # convert to factor
+levels(pred.nn) <- c(levels(pred.nn),0,1) # Does not predict any 1s as poor model fit, so add in as level to factor
+cm2 <- confusionMatrix(as.factor(test_y), as.factor(pred.nn)) # Calculate model fit measures
+
+# Store results in clean format
+hold <- as.data.frame(as.matrix(cm2, what = "overall")) # Accuracy
+hold <- rbind(hold, as.data.frame(as.matrix(cm2, what = "classes"))) # Other metrics
+colnames(hold) <- c("Health") # Rename column 
+
+# Calcuate AUC
+library(ROCR)
+pr <- prediction(pred_y, test_y) # calcuate predictions again!
+auc <- performance(pr, measure = "auc") # Calculate AUC
+auc <- auc@y.values[[1]] # Extract only AUC value 
+hold[19,1] <- auc # Join onto table of results
+rownames(hold)[19] <- "AUC" # Edit row name
+hold <- round(hold, digits=4) # Round numbers off for presentation
+nnfit_model4 <- cbind(nnfit_model4, hold) # Join to original table
+rm(hold)
+
+write.csv(nnfit_model4, "./Model fit statistics/nnfit_model4.csv") # Save
+nnfit_model4 # Print
+
+```
+
+Getting better.
+
+####Biomarkers
+
+Next up is our social data.
+
+```{r}
+source("./load_feature_selected_model4.R") # If have not run all previous lines, have saved the list of variables so call that
+library(caret) # For model fit summary statistics
+library(e1071)
+
+# Logistic regression model for training data
+logit_train_per <- glm(train_labels$health_5yr ~ ., data = train_data[,lasso_biom_vars,with=F], family = binomial(link = "logit")) # the . means all columns not stated in the formula
+
+# Evaluate model performance
+test.probs <- predict(logit_train_per, test_data[,lasso_biom_vars,with=F], type = "response") # Predicted probabilities based on logistic regression model on test data
+# Recode values as 1 if >=0.5 and 0 if <0.5
+pred.logit <- rep(0,length(test.probs)) # Set all values as 0
+pred.logit[test.probs>=0.5] <- 1 # recode those with predicted probability >=0.5 as 1
+pred.logit <- as.factor(pred.logit) # convert to factor
+levels(pred.logit) <- c(levels(pred.logit),0,1) # Does not predict any 1s as poor model fit, so add in as level to factor
+
+# Model fit statistics
+cm <- confusionMatrix(as.factor(test_labels$health_5yr), as.factor(pred.logit)) 
+
+# Store results in clean format
+hold <- as.data.frame(as.matrix(cm, what = "overall")) # Accuracy
+hold <- rbind(hold, as.data.frame(as.matrix(cm, what = "classes"))) # Other metrics
+colnames(hold) <- c("Biomarkers") # Rename column 
+
+# Calcuate AUC
+library(ROCR)
+pr <- prediction(test.probs, test_labels$health_5yr) # calcuate predictions again!
+auc <- performance(pr, measure = "auc") # Calculate AUC
+auc <- auc@y.values[[1]] # Extract only AUC value 
+hold[19,1] <- auc # Join onto table of results
+rownames(hold)[19] <- "AUC" # Edit row name
+hold <- round(hold, digits=4) # Round numbers off for presentation
+lrfit_model4 <- cbind(lrfit_model4, hold) # Join to original table
+rm(hold)
+
+write.csv(lrfit_model4, "./Model fit statistics/lrfit_model4.csv") # Save
+lrfit_model4 # Print
+
+```
+
+Similar again. We now move onto the deep learning model using k-fold cross validation.
+
+```{r}
+# Convert data to expected TensorFlow format
+dm_train <- as.matrix(train_data[,lasso_biom_vars,with=F]) # inputs
+train_y <- train_labels$health_5yr # labels
+
+# Because we will need to instantiate the same model multiple times, we use a function to construct it.
+build_model <- function() {
+  
+  # Define network structure
+  model4_biom <- keras_model_sequential() %>% # State is sequential model (i.e. no reinforced learning)
+    layer_dense(units = 16, activation = "relu", kernel_regularizer = regularizer_l1(0.001)) %>% # First layer. We include l1 regularisation to minimise potential for overfitting, although its affect is small. L1 regularisation was selected merely because it is the same as the LASSO regression.
+    layer_dense(units = 1, activation = "sigmoid") # Output layer - generate a predicted prob
+
+  model4_biom %>% compile(
+    optimizer = "rmsprop", # Optimiser - how the network will update itself during the training phase - in our case we will use Gradient Descent since has been shown to be most effective and efficient (this is one algorithm for it)
+    loss = "binary_crossentropy", # Best choice for dealing with probabilities and binary labels. Crossentropy loss function measures the difference between the probability and label values.
+    metrics = c("accuracy") # Evaluate model based on accuracy (% of correctly classified labels)
+  )
+
+}
+
+# k-fold validation (k=4)
+k <- 4 # Define k
+indices <- sample(1:nrow(train_data))
+folds <- cut(1:length(indices), breaks = k, labels = FALSE) # Identify how to split data into k folds
+
+num_epochs <- 10 # Number of epochs
+all_scores <- c()
+for (i in 1:k) {
+  
+  cat("processing fold #", i, "\n") # print progress
+  
+  # Prepare the validation data from partition #k
+  val_indices <- which(folds == i, arr.ind = TRUE) 
+  val_inputs <- dm_train[val_indices,]
+  val_labels <- train_y[val_indices]
+  
+  # Prepare the training data using data from all other partitions
+  partial_train_inputs <- dm_train[-val_indices,]
+  partial_train_labels <- train_y[-val_indices]
+  
+  # Build the Keras model (already compiled previously)
+  model4_biom <- build_model()
+  
+  # Train the model (in silent mode: verbose=0)
+  model4_biom %>% fit(partial_train_inputs, partial_train_labels,
+                epochs = num_epochs, batch_size = 128, verbose = 0)
+                
+  # Evaluate the model on the validation data
+  results <- model4_biom %>% evaluate(val_inputs, val_labels, verbose = 0)
+  
+  # Save each epoch score/information
+  all_scores <- c(all_scores, results$acc)
+  
+} 
+
+all_scores # print all values
+mean(all_scores) # print mean value
+
+# model1_per %>% fit(dm_train, y, epochs = 10, batch_size = 128)
+# dm_test <- as.matrix(test_data[,lasso_personal_vars,with=F])
+# test_y <- test_labels$health_5yr
+
+```
+
+
+The above model is fairly simple - it actually isn't deep at all but a shallow neural net.
+
+With the model developed, we can then evaluate how good it is on the test data.
+
+```{r}
+dm_test <- as.matrix(test_data[,lasso_biom_vars,with=F])
+test_y <- test_labels$health_5yr 
+metrics <- model4_biom %>% evaluate(dm_test, test_y, batch_size = 128, verbose = 0)
+metrics
+
+```
+
+There isn't any improvement over the logistic regression model. This may not be unsurpising since we there are such few predictors included in the model, and there is little depth to the model. Only so much information can be extracted and more complex layers cannot begin to tease out many interactions between variables since there are few.
+
+We can also calcuate the other metrics we used in the logstic regression model earlier.
+
+```{r}
+# Predict outcomes
+pred_y <- model4_biom %>% predict(dm_test, batch_size=128, verbose=0)
+pred.nn <- rep(0,length(pred_y))
+pred.nn[pred_y>=0.5] <- 1
+pred.nn <- as.factor(pred.nn) # convert to factor
+levels(pred.nn) <- c(levels(pred.nn),0,1) # Does not predict any 1s as poor model fit, so add in as level to factor
+cm2 <- confusionMatrix(as.factor(test_y), as.factor(pred.nn)) # Calculate model fit measures
+
+# Store results in clean format
+hold <- as.data.frame(as.matrix(cm2, what = "overall")) # Accuracy
+hold <- rbind(hold, as.data.frame(as.matrix(cm2, what = "classes"))) # Other metrics
+colnames(hold) <- c("Biomarkers") # Rename column 
+
+# Calcuate AUC
+library(ROCR)
+pr <- prediction(pred_y, test_y) # calcuate predictions again!
+auc <- performance(pr, measure = "auc") # Calculate AUC
+auc <- auc@y.values[[1]] # Extract only AUC value 
+hold[19,1] <- auc # Join onto table of results
+rownames(hold)[19] <- "AUC" # Edit row name
+hold <- round(hold, digits=4) # Round numbers off for presentation
+nnfit_model4 <- cbind(nnfit_model4, hold) # Join to original table
+rm(hold)
+
+write.csv(nnfit_model4, "./Model fit statistics/nnfit_model4.csv") # Save
+nnfit_model4 # Print
+
+```
+
+Good.
+
+####Genetic (PCA)
+
+Next up is our genetic data.
+
+```{r}
+source("./load_feature_selected_model4.R") # If have not run all previous lines, have saved the list of variables so call that
+library(caret) # For model fit summary statistics
+library(e1071)
+
+# Logistic regression model for training data
+logit_train_per <- glm(train_labels$health_5yr ~ ., data = train_data[,pca_gen_vars,with=F], family = binomial(link = "logit")) # the . means all columns not stated in the formula
+
+# Evaluate model performance
+test.probs <- predict(logit_train_per, test_data[,pca_gen_vars,with=F], type = "response") # Predicted probabilities based on logistic regression model on test data
+# Recode values as 1 if >=0.5 and 0 if <0.5
+pred.logit <- rep(0,length(test.probs)) # Set all values as 0
+pred.logit[test.probs>=0.5] <- 1 # recode those with predicted probability >=0.5 as 1
+pred.logit <- as.factor(pred.logit) # convert to factor
+levels(pred.logit) <- c(levels(pred.logit),0,1) # Does not predict any 1s as poor model fit, so add in as level to factor
+
+# Model fit statistics
+cm <- confusionMatrix(as.factor(test_labels$health_5yr), as.factor(pred.logit)) 
+
+# Store results in clean format
+hold <- as.data.frame(as.matrix(cm, what = "overall")) # Accuracy
+hold <- rbind(hold, as.data.frame(as.matrix(cm, what = "classes"))) # Other metrics
+colnames(hold) <- c("Genetic (PCA)") # Rename column 
+
+# Calcuate AUC
+library(ROCR)
+pr <- prediction(test.probs, test_labels$health_5yr) # calcuate predictions again!
+auc <- performance(pr, measure = "auc") # Calculate AUC
+auc <- auc@y.values[[1]] # Extract only AUC value 
+hold[19,1] <- auc # Join onto table of results
+rownames(hold)[19] <- "AUC" # Edit row name
+hold <- round(hold, digits=4) # Round numbers off for presentation
+lrfit_model4 <- cbind(lrfit_model4, hold) # Join to original table
+rm(hold)
+
+write.csv(lrfit_model4, "./Model fit statistics/lrfit_model4.csv") # Save
+lrfit_model4 # Print
+
+```
+
+Pretty poor.
+
+We now move onto the deep learning model using k-fold cross validation.
+
+```{r}
+# Convert data to expected TensorFlow format
+dm_train <- as.matrix(train_data[,pca_gen_vars,with=F]) # inputs
+train_y <- train_labels$health_5yr # labels
+
+# Because we will need to instantiate the same model multiple times, we use a function to construct it.
+build_model <- function() {
+  
+  # Define network structure
+  model4_gen <- keras_model_sequential() %>% # State is sequential model (i.e. no reinforced learning)
+    layer_dense(units = 16, activation = "relu", kernel_regularizer = regularizer_l1(0.001)) %>% # First layer. We include l1 regularisation to minimise potential for overfitting, although its affect is small. L1 regularisation was selected merely because it is the same as the LASSO regression.
+    layer_dense(units = 1, activation = "sigmoid") # Output layer - generate a predicted prob
+
+  model4_gen %>% compile(
+    optimizer = "rmsprop", # Optimiser - how the network will update itself during the training phase - in our case we will use Gradient Descent since has been shown to be most effective and efficient (this is one algorithm for it)
+    loss = "binary_crossentropy", # Best choice for dealing with probabilities and binary labels. Crossentropy loss function measures the difference between the probability and label values.
+    metrics = c("accuracy") # Evaluate model based on accuracy (% of correctly classified labels)
+  )
+
+}
+
+# k-fold validation (k=4)
+k <- 4 # Define k
+indices <- sample(1:nrow(train_data))
+folds <- cut(1:length(indices), breaks = k, labels = FALSE) # Identify how to split data into k folds
+
+num_epochs <- 10 # Number of epochs
+all_scores <- c()
+for (i in 1:k) {
+  
+  cat("processing fold #", i, "\n") # print progress
+  
+  # Prepare the validation data from partition #k
+  val_indices <- which(folds == i, arr.ind = TRUE) 
+  val_inputs <- dm_train[val_indices,]
+  val_labels <- train_y[val_indices]
+  
+  # Prepare the training data using data from all other partitions
+  partial_train_inputs <- dm_train[-val_indices,]
+  partial_train_labels <- train_y[-val_indices]
+  
+  # Build the Keras model (already compiled previously)
+  model4_gen <- build_model()
+  
+  # Train the model (in silent mode: verbose=0)
+  model4_gen %>% fit(partial_train_inputs, partial_train_labels,
+                epochs = num_epochs, batch_size = 128, verbose = 0)
+                
+  # Evaluate the model on the validation data
+  results <- model4_gen %>% evaluate(val_inputs, val_labels, verbose = 0)
+  
+  # Save each epoch score/information
+  all_scores <- c(all_scores, results$acc)
+  
+} 
+
+all_scores # print all values
+mean(all_scores) # print mean value
+
+# model1_per %>% fit(dm_train, y, epochs = 10, batch_size = 128)
+# dm_test <- as.matrix(test_data[,lasso_personal_vars,with=F])
+# test_y <- test_labels$health_5yr
+
+```
+
+
+The above model is fairly simple - it actually isn't deep at all but a shallow neural net.
+
+With the model developed, we can then evaluate how good it is on the test data.
+
+```{r}
+dm_test <- as.matrix(test_data[,pca_gen_vars,with=F])
+test_y <- test_labels$health_5yr 
+metrics <- model4_gen %>% evaluate(dm_test, test_y, batch_size = 128, verbose = 0)
+metrics
+
+```
+
+There isn't any improvement over the logistic regression model This may not be unsurpising since we there are such few predictors included in the model, and there is little depth to the model. Only so much information can be extracted and more complex layers cannot begin to tease out many interactions between variables since there are few.
+
+We can also calcuate the other metrics we used in the logstic regression model earlier.
+
+```{r}
+# Predict outcomes
+pred_y <- model4_gen %>% predict(dm_test, batch_size=128, verbose=0)
+pred.nn <- rep(0,length(pred_y))
+pred.nn[pred_y>=0.5] <- 1
+pred.nn <- as.factor(pred.nn) # convert to factor
+levels(pred.nn) <- c(levels(pred.nn),0,1) # Does not predict any 1s as poor model fit, so add in as level to factor
+cm2 <- confusionMatrix(as.factor(test_y), as.factor(pred.nn)) # Calculate model fit measures
+
+# Store results in clean format
+hold <- as.data.frame(as.matrix(cm2, what = "overall")) # Accuracy
+hold <- rbind(hold, as.data.frame(as.matrix(cm2, what = "classes"))) # Other metrics
+colnames(hold) <- c("Genetic (PCA)") # Rename column 
+
+# Calcuate AUC
+library(ROCR)
+pr <- prediction(pred_y, test_y) # calcuate predictions again!
+auc <- performance(pr, measure = "auc") # Calculate AUC
+auc <- auc@y.values[[1]] # Extract only AUC value 
+hold[19,1] <- auc # Join onto table of results
+rownames(hold)[19] <- "AUC" # Edit row name
+hold <- round(hold, digits=4) # Round numbers off for presentation
+nnfit_model4 <- cbind(nnfit_model4, hold) # Join to original table
+rm(hold)
+
+write.csv(nnfit_model4, "./Model fit statistics/nnfit_model4.csv") # Save
+nnfit_model4 # Print
+
+```
+
+Still naff.
+
+####All data (PCA)
+
+Next up is our genetic data.
+
+```{r}
+source("./load_feature_selected_model4.R") # If have not run all previous lines, have saved the list of variables so call that
+library(caret) # For model fit summary statistics
+library(e1071)
+
+# Logistic regression model for training data
+logit_train_all <- glm(train_labels$health_5yr ~ ., data = train_data[,lasso_all_vars,with=F], family = binomial(link = "logit")) # the . means all columns not stated in the formula
+
+# Evaluate model performance
+test.probs <- predict(logit_train_all, test_data[,lasso_all_vars,with=F], type = "response") # Predicted probabilities based on logistic regression model on test data
+# Recode values as 1 if >=0.5 and 0 if <0.5
+pred.logit <- rep(0,length(test.probs)) # Set all values as 0
+pred.logit[test.probs>=0.5] <- 1 # recode those with predicted probability >=0.5 as 1
+pred.logit <- as.factor(pred.logit) # convert to factor
+levels(pred.logit) <- c(levels(pred.logit),0,1) # Does not predict any 1s as poor model fit, so add in as level to factor
+
+# Model fit statistics
+cm <- confusionMatrix(as.factor(test_labels$health_5yr), as.factor(pred.logit)) 
+
+# Store results in clean format
+hold <- as.data.frame(as.matrix(cm, what = "overall")) # Accuracy
+hold <- rbind(hold, as.data.frame(as.matrix(cm, what = "classes"))) # Other metrics
+colnames(hold) <- c("All data (PCA)") # Rename column 
+
+# Calcuate AUC
+library(ROCR)
+pr <- prediction(test.probs, test_labels$health_5yr) # calcuate predictions again!
+auc <- performance(pr, measure = "auc") # Calculate AUC
+auc <- auc@y.values[[1]] # Extract only AUC value 
+hold[19,1] <- auc # Join onto table of results
+rownames(hold)[19] <- "AUC" # Edit row name
+hold <- round(hold, digits=4) # Round numbers off for presentation
+lrfit_model4 <- cbind(lrfit_model4, hold) # Join to original table
+rm(hold)
+
+write.csv(lrfit_model4, "./Model fit statistics/lrfit_model4.csv") # Save
+lrfit_model4 # Print
+
+```
+
+Not too shabby! We now move onto the deep learning model using k-fold cross validation.
+
+```{r}
+# Convert data to expected TensorFlow format
+dm_train <- as.matrix(train_data[,lasso_all_vars,with=F]) # inputs
+train_y <- train_labels$health_5yr # labels
+
+# Because we will need to instantiate the same model multiple times, we use a function to construct it.
+build_model <- function() {
+  
+  # Define network structure
+  model4_all <- keras_model_sequential() %>% # State is sequential model (i.e. no reinforced learning)
+    layer_dense(units = 16, activation = "relu", kernel_regularizer = regularizer_l1(0.001)) %>% # First layer. We include l1 regularisation to minimise potential for overfitting, although its affect is small. L1 regularisation was selected merely because it is the same as the LASSO regression.
+    layer_dense(units = 1, activation = "sigmoid") # Output layer - generate a predicted prob
+
+  model4_all %>% compile(
+    optimizer = "rmsprop", # Optimiser - how the network will update itself during the training phase - in our case we will use Gradient Descent since has been shown to be most effective and efficient (this is one algorithm for it)
+    loss = "binary_crossentropy", # Best choice for dealing with probabilities and binary labels. Crossentropy loss function measures the difference between the probability and label values.
+    metrics = c("accuracy") # Evaluate model based on accuracy (% of correctly classified labels)
+  )
+
+}
+
+# k-fold validation (k=4)
+k <- 4 # Define k
+indices <- sample(1:nrow(train_data))
+folds <- cut(1:length(indices), breaks = k, labels = FALSE) # Identify how to split data into k folds
+
+num_epochs <- 10 # Number of epochs
+all_scores <- c()
+for (i in 1:k) {
+  
+  cat("processing fold #", i, "\n") # print progress
+  
+  # Prepare the validation data from partition #k
+  val_indices <- which(folds == i, arr.ind = TRUE) 
+  val_inputs <- dm_train[val_indices,]
+  val_labels <- train_y[val_indices]
+  
+  # Prepare the training data using data from all other partitions
+  partial_train_inputs <- dm_train[-val_indices,]
+  partial_train_labels <- train_y[-val_indices]
+  
+  # Build the Keras model (already compiled previously)
+  model4_all <- build_model()
+  
+  # Train the model (in silent mode: verbose=0)
+  model4_all %>% fit(partial_train_inputs, partial_train_labels,
+                epochs = num_epochs, batch_size = 128, verbose = 0)
+                
+  # Evaluate the model on the validation data
+  results <- model4_all %>% evaluate(val_inputs, val_labels, verbose = 0)
+  
+  # Save each epoch score/information
+  all_scores <- c(all_scores, results$acc)
+  
+} 
+
+all_scores # print all values
+mean(all_scores) # print mean value
+
+# model1_per %>% fit(dm_train, y, epochs = 10, batch_size = 128)
+# dm_test <- as.matrix(test_data[,lasso_personal_vars,with=F])
+# test_y <- test_labels$health_5yr
+
+```
+
+
+The above model is fairly simple - it actually isn't deep at all but a shallow neural net.
+
+With the model developed, we can then evaluate how good it is on the test data.
+
+```{r}
+dm_test <- as.matrix(test_data[,lasso_all_vars,with=F])
+test_y <- test_labels$health_5yr 
+metrics <- model4_all %>% evaluate(dm_test, test_y, batch_size = 128, verbose = 0)
+metrics
+
+```
+
+There isn't any improvement over the logistic regression model. This may not be unsurpising since we there are such few predictors included in the model, and there is little depth to the model. Only so much information can be extracted and more complex layers cannot begin to tease out many interactions between variables since there are few.
+
+We can also calcuate the other metrics we used in the logstic regression model earlier.
+
+```{r}
+# Predict outcomes
+pred_y <- model4_all %>% predict(dm_test, batch_size=128, verbose=0)
+pred.nn <- rep(0,length(pred_y))
+pred.nn[pred_y>=0.5] <- 1
+pred.nn <- as.factor(pred.nn) # convert to factor
+levels(pred.nn) <- c(levels(pred.nn),0,1) # Does not predict any 1s as poor model fit, so add in as level to factor
+cm2 <- confusionMatrix(as.factor(test_y), as.factor(pred.nn)) # Calculate model fit measures
+
+# Store results in clean format
+hold <- as.data.frame(as.matrix(cm2, what = "overall")) # Accuracy
+hold <- rbind(hold, as.data.frame(as.matrix(cm2, what = "classes"))) # Other metrics
+colnames(hold) <- c("All data (PCA)") # Rename column 
+
+# Calcuate AUC
+library(ROCR)
+pr <- prediction(pred_y, test_y) # calcuate predictions again!
+auc <- performance(pr, measure = "auc") # Calculate AUC
+auc <- auc@y.values[[1]] # Extract only AUC value 
+hold[19,1] <- auc # Join onto table of results
+rownames(hold)[19] <- "AUC" # Edit row name
+hold <- round(hold, digits=4) # Round numbers off for presentation
+nnfit_model4 <- cbind(nnfit_model4, hold) # Join to original table
+rm(hold)
+
+write.csv(nnfit_model4, "./Model fit statistics/nnfit_model4.csv") # Save
+nnfit_model4 # Print
+
+```
+
+Best so far.
+
+####Model interpretability
+
+Let's open up the black box.
+
+```{r}
+library(dplyr)
+library(corrr)
+pred_y <- model4_all %>% predict(dm_train, batch_size=128, verbose=0) # Predicted y's
+corrr_analysis <- train_data[,lasso_all_vars,with=F] %>% # Test data
+                    mutate(outcome = pred_y) %>% # Get predicted outcome
+                    correlate() %>% # Calcuate correlations
+                    focus(outcome) %>% # For rest of lines just edit this variable
+                    rename(feature = rowname) %>% # Rename
+                    arrange(abs(outcome))
+
+# We have a lot of variables so subset only those with correlations +- 0.2
+hold <- as.data.table(corrr_analysis)
+hold2 <- hold[hold$outcome >= 0.2 | hold$outcome <= -0.2]
+
+# Plot
+cor_plot <- ggplot(hold2, aes(x = outcome, y = reorder(feature, desc(outcome)))) +
+                    geom_point() +
+                    # Positive Correlations - Contribute to LLTI (i.e. predict 1)
+                    geom_segment(aes(xend = 0, yend = feature), data = hold2) +
+                    geom_point(data = hold2) +
+                    # Negative Correlations - Prevent LLTI (i.e. predict 0)
+                    geom_segment(aes(xend = 0, yend = feature), data = hold2) +
+                    geom_point(data = hold2) +
+                    # Aesthetics
+                    labs(y = "Feature", x = "Correlation")
+ggsave("./Plots/corr_plot_model4_paper.tiff", cor_plot, device = "tiff", dpi = 300)
+ggsave("./Plots/corr_plot_model4_prez.png", cor_plot, device = "png", dpi = 300)
+print(cor_plot)
+
+```
+
+Somewhat similar again at the positive end of the distribution, although we see here benefit5 which was child benefit interestingly and the number of times married instead of marital status. At the negative end we see igfi (Insulin-like-growth factor 1), job security, Dihydroepiandrosterone (DHEAS) sulphate and the physicality of work. There are a lot more negative predictors again - what are helping us to predict 0s which is probably less useful as we really want to predict the 1s.
+
+```{r}
+library(ICEbox)
+ice_hcond96 <- ice(object = model4_all, X = dm_train, # You can also do for test data
+               predictor = "hcond96", frac_to_build = 1) # frac_to_build - % randomly selected to build plot - can take a smaller proportion to save time or larger for greater precision (1 max)
+ice_age <- ice(object = model4_all, X = dm_train, 
+               predictor = "age", frac_to_build = 1)
+ice_benefit5 <- ice(object = model4_all, X = dm_train,  
+               predictor = "benefit5", frac_to_build = 1)
+ice_times_mar <- ice(object = model4_all, X = dm_train, 
+               predictor = "times_mar", frac_to_build = 1)
+
+par(mfrow=c(2,2))
+plot(ice_age, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "Age")
+plot(ice_hcond96, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "No health conditions")
+plot(ice_times_mar, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "Times married")
+plot(ice_benefit5, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "Child benefit")
+
+```
+
+We can center the plots too.
+
+```{r}
+par(mfrow=c(2,2))
+plot(ice_age, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "Age", centered = T)
+plot(ice_hcond96, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "No health conditions", centered = T)
+plot(ice_times_mar, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "Times married", centered = T)
+plot(ice_benefit5, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "Child benefit", centered = T)
+
+```
+
+Now for the other end of the predictors.
+
+```{r}
+ice_wkphys <- ice(object = model4_all, X = dm_train,
+               predictor = "b_wkphys", frac_to_build = 1)
+ice_igfi <- ice(object = model4_all, X = dm_train, 
+               predictor = "igfi", frac_to_build = 1)
+ice_jbsec <- ice(object = model4_all, X = dm_train,  
+               predictor = "b_jbsec", frac_to_build = 1)
+ice_dheas <- ice(object = model4_all, X = dm_train, 
+               predictor = "dheas", frac_to_build = 1)
+
+par(mfrow=c(2,2))
+plot(ice_wkphys, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "Work physicality")
+plot(ice_igfi, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "Insulin-like-growth factor 1")
+plot(ice_dheas, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "DHEAS sulfate")
+plot(ice_jbsec, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "Job security")
+
+```
+
+Let's center them
+
+```{r}
+par(mfrow=c(2,2))
+plot(ice_wkphys, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "Work physicality", centered = T)
+plot(ice_igfi, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "Insulin-like-growth factor 1", centered = T)
+plot(ice_dheas, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "DHEAS sulfate", centered = T)
+plot(ice_jbsec, frac_to_plot = 0.05, xlab = "Standardised Values", ylab = "Partial Predicted Outcome", plot_pdp = T, main = "Job security", centered = T)
+
+```
+
+
+
+
+
+
+"
+author: "Mark A Green"
+date: "15 October 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

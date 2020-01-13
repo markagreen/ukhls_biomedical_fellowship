@@ -1,0 +1,727 @@
+---
+title: "Learning Deep Learning"
+author: Mark A Green
+output: html_notebook
+---
+
+##Preamble
+
+A notebook of my notes and understanding of deep learning for application to my biomedical data fellowship. Notes cam mainly from the book 'Chollet F, Allaire JJ. 2018. Deep Learning with R. Manning: new York, US.' Other references are used and cited throughout.
+
+Notes are for understanding what to do for my fellowship (which will also incoporate notebooks), as well as for writing up the project findings and producing a series of tutorials with the aim of improving the accessibility to what is a complex methodology (this is important to improve understanding of its applications and the uptake of the method).
+
+Most examples of deep learning involve image data (or text) which is less useful for anyone analysing social/health survey data. I will make sure you give relevant examples where possible.
+
+I also recommend using RStudio for following this.
+
+##Keras
+
+Keras is one of the most accessible pieces of software for implementing machine learning and artifical intelligence systems. It is a model based library, drawing on several other pieces of software to undertake low-level operations. It is used as TensorFlow (Google's machine learning interface/backend engine) API. It is open-source, however runs more efficiently on UNIX machines (it is compatible with Windows, however not recommended). It also prefers a set up that includes a good GPU (Graphics Processing Unit/Graphics Card) so that algorithms are processed quickly/efficiently. This is not required (indeed the code is the same for using a GPU or CPU), but certainly helps. An alternative is using most cloud-based systems to process models. If you plan any serious deep learning, it is worth getting hold of a good GPU.
+
+##An introduction to deep learning
+
+Artificial intelligence (AI) developed as a field in the 1950s (pioneered by great thinkers such as Alan Turing) through exploring whether computers could be developed that could 'think' like humans. Many of these early systems involved humans programming rules and procedures into computers so that their decisions were based on these rules (known as symbolic AI). This was time consuming and not efficient; it became difficult with increasing complexity of rules to manually programme everything. 
+
+Machine learning is a subfield of AI. Though machine learning has been around for a long time, it did not really take off until the 1990s (and indeed really the late 2000s) with improvements in computer hardware and growth in availability of large complex data sets (particularly those which classical statistical techniques cannot process easily).
+
+Rather than programming rules for a computer, it relies on a computer learning insights about a specific task or procedure based on examining data. In short, it is often quicker to build a model that can teach itself rules rather than programme them yourself. Through showing a computer the answers from the data, it can learn what the rules are itself rather than having to be told these. The learning process requires feedback and evaluation of what is the expected answer (compared to what it guesses the answer to be), allowing the computer to iteratively learn what are the 'correct' rules with deciding on answers based on the data. It is about transforming data to produce a more useful representation of what the data means (i.e. finding the signal from the noise). The rules can then be applied to new data to ascertain their answers (i.e. automated tasks). Models therefore require training of some sort to learn these insights. 
+
+Deep learning is a subset of machine learning usually typified by artifical neural networks. Neural networks have been around a long time, but fell out of favour (linked to overhyped expectations in the 1960s and 1970s failing to materialise - and similarly again in the late 1980s). Neural networks are algorithms that use neurons to process input data to predict the likelihood of an outcome (based on learning associations from past data). Their structure takes inspiration from the architecture of the brain (they are not based on the brain itself, a common misconception). 
+
+Deep learning is merely where we have multiple successive layers (the most complex models may contain hundres of layers) each learning insights from the previous and informing the next. Conceptually, these layers are filtering out the key information at each step/layer to make more informed decisions over how best to classify data. Shallow learning is where we have only one or two layers (gradient boosting algorithms outperform neural networks here and are particualrly effective when dealing with structured data).
+
+It was not until recently that deep learning took off (most of its success have occurred since 2010). There are several explanations for this. One is hardware improvements - not just in CPUs but particualrly GPUs for complex models (this is linked to improvements in hardware due to the growth of the computer games industry). Large companys now possess clusters of GPUs for developing models Such hardware advances will continue, such as Google developing a deep learning specific chip (TPUs - Tensor Processing Units) that is more efficient than GPUs. Such hardware improvements have occurred alongside increasing availablility of data particualrly growth in big data and new forms of data. Deep learning models not onlyy scale well with increasing data, but are flexible and can handle multiple data types (some of the most famous successes have been with text or image data - non-traditional data sources). This is been linked to large scale investment from technology copanys (think Google's purchase of DeepMind for $500m). Another factor is that because they offer an automated platform of feature extraction, this enables minor human intervention in model development which is important when dealing with complex data. Finally, refinements to algorithms have occurred during the 2000s that have improved the efficiency of the models.
+
+Layers work through assigning weights (also known as parameters of a layer) to input data based upon an output. The learning part refines these weights. Where we have a large number of weights (i.e. where there are a complex amount of inputs), this process of learning can take some time. Initially weights are randomly assigned. Weights are refined based on a loss function (also known as an objective function) which evaluates how well a model is performing (i.e. comparing the models expected outcome to the answer). This may be a simple distance score. The loss function allows the model to feedback and refine the weights. Weights are refined through an 'optimiser' typically 'backpropagation'. Layers are refined together rather than one at a time (this is referred to as greedy or joint feature learning).
+
+##Understanding the components of neural networks
+
+"In machine learning, a category in a classification problem is called a class. Data points are samples. The class associated with a specific sample is called a label." (p25)
+
+Data in neural networks are stored in multidimensional arrays (dimensions are referred to as 'axes') known as 'tensors'. In R, we will use a vector where there is only 1 tensor (try to not confused with dimensions here which typically refer to the number of data points across an axis - so might be the total sample size), a matrix for two tensors, and arrays for 3+. A vector is where we have a single variable, with matrices used with multiple rows and columns (sample, features). 3+ might refer to time series or sequential data (sample, time, features). Image data is 4D (samples, height, width, channels [colour values]) and video 5D (same as image but with frames).
+
+With matrices, the first axis processed is usually the sample (samples axis), followed by the features (features axis). When we are dealing with time series data, always keep it in order. The time element will become the second axis here.
+
+We will use an example of classifying greyscale images of numbers (single digits) to help illustrate each part of a neural network. The data is the MNIST data found in R. It contains 60,000 training images, and 10,000 test images. You should never traing and test your models on the same data set - it is important to have separate data to build effective models, else your model will likely overperform. MNIST is a classic test machine learning dataset used normally to test algorithms are performing correctly. Images are a 3D array constituting an image of 28x28 pixels. Labels are values between 0 and 9. Let's load the data and split it into the train and test sets, and edit it to the format our network will expect. Tensors will either be integer or double data type (character types are rare).
+
+```{r}
+library(keras)
+# Install only once?
+install_keras() # Just process using CPU
+# install_keras(tensorflow = "gpu") # If you have a good GPU which is properly configured to CUDA and cuDNN libraries
+
+mnist <- dataset_mnist() # Get data
+train_images <- mnist$train$x # Get images for training sample
+train_labels <- mnist$train$y # Get labels of the images for training sample
+test_images <- mnist$test$x # Get images for test sample
+test_labels <- mnist$test$y # Get labels of the images for test sample
+
+# Tensor slicing is where we subset out data - you may here want to focus only on a small subset of pixels e.g. the bottom corner.
+
+# 'Tensor reshape' the data into the expected shape and scale values between 0 and 1
+# Shape refers to the number of dimensions a tensor has along each axis - in our case we with 60,000 matrices, with values along a 28x28 set of pixels. The number of axes is 3 (i.e. three components to the data - the three numbers we defined). If you need to find this out use the code 'dim(array)'. Essentially we are rearrangeing the data to match the output. Transposing a data set is one common type of reshaping data. 
+train_images <- array_reshape(train_images, c(60000, 28 * 28)) # Previously images were stored in format 60000 (n), 28 by 28 (pixels - we can think of these like variables)
+train_images <- train_images / 255 # Values before ranged from 0 to 255.
+# This code converst the data into a double array of shape 60000, 28x28 with values between 0 and 1
+
+# Same for test images
+test_images <- array_reshape(test_images, c(10000, 28 * 28))
+test_images <- test_images / 255
+
+# Change labels to categorical variables
+train_labels <- to_categorical(train_labels)
+test_labels <- to_categorical(test_labels)
+
+```
+
+The workflow is simple: 
+1. Feed a neural network the training data set to learn the associations between images and labels. 
+2. Apply the model to the test images and produce a set of predicted labels. 
+3. Compare the predicted labels to the actual labels to assess performance.
+
+The key to neural networks are 'layers'. These are data processing modules that extract representations from data to repdict an outcome. Deep learning works through chaining together layers to filter data (aka data distillation). The analogy the book uses is a sieve for refining the data into the important bits. Let us define our network and layers for this example
+
+```{r}
+network <- keras_model_sequential() %>% 
+  layer_dense(units = 512, activation = "relu", input_shape = c(28 * 28)) %>% 
+  layer_dense(units = 10, activation = "softmax")
+
+```
+
+Here we have a sequence of only two layers (the hypothesis space is the full typology of a network). They are both 'densely' connected (i.e. fully connected). We tend to favour these types of layers for 2D tensors (for time series we would probably use recurrent layers). The second layer will return probabilities for 10 possible outcomes (i.e what we are predicting - probability of an image being each digit 0-9). 
+
+Each layer is similar to a function converting the input data into a new set of representations. The 'relu' part is an element-wise operation which is applied to each data point within a tensor. This means that we can use parrallel processing to speed up the processing time. Within the relu element, we have a dot operation (aka tensor product) which allows combines data points within a tensor. So the element does not just have the ability to add or subtract processes, but can also multiple (i.e. look at their interactions). We can also use geometric operations. Each of these transformations of the data through each step help to filter out the key information from the data for making a prediction of an outcome. The input shape is not specified for the second layer, but will be assumed by the network to be the same as the previous layer.
+
+The relu part in the above code can be defined also as:
+
+output = relu(dot(W, input) + b)
+
+Here W is the kernal and b is the bias. These are both weights (aka trainable parameters). They begin as random inputs and through training will be adjusted based on feedback. This works through the following steps.
+1. Draw a batch of training data and their known outcomes
+2. Forward pass - apply the network on the training data to acquire predicted outcomes
+3. Measure the agreement between the predicted and actual outcomes - calculate the overall loss/difference for values
+4. Adjust the weights to minimise the loss. This is the most difficult part to do effectively. It is inefficient to constantly change single weights and a time and reassess. However, since each operation is 'differentiable' and the you can calcuate the 'gradient' of the loss relating to weights, you can adjust the weights based on their gradients to minimise the loss. In sum, where there is a smooth continuous function to measure the association between the a single input/weight and its output, we can always derive its function and how changing x (input) will change y (output). This is partly why people say machine/deep learning is just curve fitting. A gradient applys the derivation to the broader tensor operation dealing with multiple inputs (usually stochastic gradient descent). This allows the network to locate which weights to adjust to reduce the loss function to its smallest possible value at each step. This is referred to as the backward pass - feedback on how to adjust weights. The step is important to assess for under- and over-fitting.
+5. Loop back to #1
+
+Eventually improvements in the loss will have been considerably reduced and the model will have finished training the data. Where there are multiple layers, we can use backpropagation to decide how to update weights. The chain rule means we can differentiate between each layer and function. Backpropagation means that we start with the loss value of the bottom layer, backwards to the top layer in order. The chain rule is applied to isolate each coefficient or weight within each layer and it's contribution to the loss function. This has been improved through symbolic differentiation, that allows a full mapping of weights to their gradient and hence loss function. It means we do not need to manually code backpropagation, but can use this efficiently.
+
+usually the loss function is a single metric. Where multiple metrics are used, the model will take the average. It requires a single value only.
+
+The next step is to edit the network so that it is ready for training. The compilation step below introduces the following
+* An optimiser - how the network will update itself during the training phase
+* A loss function - how the network can evaluate decisions and rules it chooses. We selected the one that works well with categorical outcomes with multiple values. There is a binary version of this loss function too. For regression problems we would use MSE and CTC for sequence data.
+* Metrics for monitoring (in our case the accuracy of the model) the training process (but also the same as the test process).
+
+```{r}
+network %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+```
+
+We can now run our model. The network will process the data in batches and it is important to consider the batch size (below we have used 128). The first axis of any model is referred to as the 'batch axis'. Epochs is the number of iterations for the model.
+
+```{r}
+network %>% fit(train_images, train_labels, epochs = 5, batch_size = 128)
+
+```
+
+The model will print output of the training process. Of note are the loss function and accuracy metrics which will help us to see how the model has improved through the training process. It will also plot these values within the viewer tab of RStudio.
+
+It does not take long to reach an accuracy of 98.9% which suggests our model is performing well. Let's now apply the network onto the test data and evaluate how good it is.
+
+```{r}
+metrics <- network %>% evaluate(test_images, test_labels, verbose = 0)
+metrics
+
+# network %>% predict_classes(test_images[1:10,]) # In case you want to look at the predictions of certain data points - will print the predicted outputs for the first 10 rows of test data
+
+```
+
+So our model looks good! The loss and accuracy metrics are not as good in the test sample as the training sample - this is fairly common. This reflects slight overfitting on the training data.
+
+##Binary classification
+
+We will work through an example here on classifying IMDB move reviews as good or bad based on the text of the review. The data are 50,000 move reviews taken from the website - 25,000 reviews forms the training data and 25,000 form the test data. There is a 50/50 split for positive and negative reviews. The data has been preprocessed into a sequence of words identified by integers. Let's load it in and convert it to the format ready to be fed into a neural network.
+
+```{r}
+imdb <- dataset_imdb(num_words = 10000) # num_words here means keep only most frequent 10,000 words
+c(c(train_data, train_labels), c(test_data, test_labels)) %<-% imdb # Here we can use the multi-assignment operator %<% from the package zeallot to split the data up into training/test data and labels. To do this manually, we would have done exactly the same thing as earlier (lines 53-57)
+
+# We need to change the list data into a tensor - we will do this by turning it into a vector with binary data
+vectorize_sequences <- function(sequences, dimension = 10000) {
+  # Create an all-zero matrix of shape (len(sequences), dimension)
+  results <- matrix(0, nrow = length(sequences), ncol = dimension)
+  for (i in 1:length(sequences))
+    # Sets specific indices of results[i] to 1s
+    results[i, sequences[[i]]] <- 1
+  results
+}
+
+# Our vectorized training data
+x_train <- vectorize_sequences(train_data)
+# Our vectorized test data
+x_test <- vectorize_sequences(test_data)
+
+# To vectorize the labels from integers to numeric
+y_train <- as.numeric(train_labels)
+y_test <- as.numeric(test_labels)
+
+```
+
+With our input data as vectors and labels as binary scalars, a simple fully connected layer with relu (rectified linear unit) activations should perform well here. We defined what the relu activation did earlier in this document - it allows for non-linear associations between inputs which helps extend the hypothesis space. 
+
+
+```{r}
+model <- keras_model_sequential() %>% 
+  layer_dense(units = 16, activation = "relu", input_shape = c(10000)) %>% 
+  layer_dense(units = 16, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+```
+
+The unites refers to the number of hidden units for a layer. The greater number of hidden units, the more complex the model is (which is computationally expensive and may lead to overfitting) but also allows greater interrogation of the data.
+
+The final layer creates probabilities of our outcomes. A sigmoid activiation tells it to produce a probability between 0 and 1 for, in our case, the likelihood of a positive review (i.e. a value of 1). Relu differs since it assigns 0s to negative values, whereas sigmoid acts more like a logit function constraining things between 0 and 1.
+
+Next we need to compile the model and define our optimizer, loss function and evaluation metrics.
+
+
+```{r}
+model %>% compile(
+  optimizer = "rmsprop", # If you wanted to edit, code as ' = optimizer_rmsprop(lr=0.001)'
+  loss = "binary_crossentropy", # Best choice for dealing with probabilities and binary labels - mean_squared_error is an alternative Crossentropy measures the difference between the probability and label values.
+  metrics = c("accuracy") # edit it using '= metric_binary_accuracy' where is a function
+)
+
+```
+
+To validate our model, we will need to create a data set that the model will have never seen before. We do this from the original training data.
+
+```{r}
+val_indices <- 1:10000 # Set aside 10,000
+
+x_val <- x_train[val_indices,]
+partial_x_train <- x_train[-val_indices,]
+
+y_val <- y_train[val_indices]
+partial_y_train <- y_train[-val_indices]
+
+```
+
+We will now monitor loss and accuracy on these 10,000 data points as we build the model. The fit command will train the model, with history recording the key information.
+
+```{r}
+history <- model %>% fit(
+  partial_x_train,
+  partial_y_train,
+  epochs = 20, # Train the model for 20 iterations
+  batch_size = 512, # Select batch size
+  validation_data = list(x_val, y_val)
+)
+# R Studio will automatically plot the results in the viewer in real-time (it is also interactive). To create something that can be exported though use
+plot(history) # Uses ggplo2 if available
+# If want to create a custom plot, then need to create a data frame first 'df <- as.data.frame(history)'
+
+```
+
+The training loss and accuracy both improve with each iteration before levelling off at the end of the model. However, the contrary is found for the validation part of the model. It demonstrates that a good fitting model doesn't always do well on new data - it is likely a symptom of overfitting (learning representations of the data that are only specific to the training data).
+
+We might opt here to stop training after 2 epochs, or even 4. These still present good values (note the accuracy values for the validation data for these two epochs are ~88%). We might also use different techniques to improve the model and prevent overfitting (see later). We might also opt for more hidden layers or more units (in our case overfitting gets worse with the loss function).
+
+After making a decision, we would take that model and evaluate it against the test data set.
+
+```{r}
+model <- keras_model_sequential() %>% 
+  layer_dense(units = 16, activation = "relu", input_shape = c(10000)) %>% 
+  layer_dense(units = 16, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+model %>% compile(
+  optimizer = "rmsprop",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+
+model %>% fit(x_train, y_train, epochs = 4, batch_size = 512)
+results <- model %>% evaluate(x_test, y_test)
+results
+```
+
+88% accuracy - not too bad, but room for improvement.
+
+##Multiclass classification
+
+We will explore classifying data into more than 2 groups using the example of Reuters news snips since 1986 and classifying their topics into 46 categories. Since each data point is only classified once, it is known as a 'single label' problem. Let's load the data (n = 8982 training and n = 2246 test). The data are integers representing the word values.
+
+```{r}
+reuters <- dataset_reuters(num_words = 10000) # Select only most frequent words
+c(c(train_data, train_labels), c(test_data, test_labels)) %<-% reuters
+
+# Vectorise
+vectorize_sequences <- function(sequences, dimension = 10000) {
+  results <- matrix(0, nrow = length(sequences), ncol = dimension)
+  for (i in 1:length(sequences))
+    results[i, sequences[[i]]] <- 1
+  results
+}
+
+x_train <- vectorize_sequences(train_data)
+x_test <- vectorize_sequences(test_data)
+
+# Categorical encoding the labels
+one_hot_train_labels <- to_categorical(train_labels)
+one_hot_test_labels <- to_categorical(test_labels)
+```
+
+With 46 possible outcomes, the dimensionality of the output space is far larger than our previous example. Let's define our model.
+
+```{r}
+# Model definition
+model <- keras_model_sequential() %>% 
+  layer_dense(units = 64, activation = "relu", input_shape = c(10000)) %>% 
+  layer_dense(units = 64, activation = "relu") %>% 
+  layer_dense(units = 46, activation = "softmax") # Softmax gives a probability distribution over each of the outputs (in our case 46). So for each input, there will be a probability for all possible 46 outcomes (which sum to 1).
+
+```
+
+Each layer can only access information from the previous layer. This means if some important information is missed at a layer, it cannot be accessed in the subsequent ones. While 16 dimensional layers might have been appropriate for the previous example, it may be too restrictive here. You should avoid setting the units smaller than the number of the final outputs (46) as it will miss out on information essentially compressing the most important info only.
+
+```{r}
+# Compiling the model
+model %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy", # Measuring the distance between probability distributions (of the predicted probabilities and their true distribution of values). If we had preserved the integer values of the labels then we would use "sparse_categorical_crossentropy"
+  metrics = c("accuracy")
+)
+
+```
+
+Ok good - let's set aside 1000 samples as a validation data set
+
+```{r}
+val_indices <- 1:1000
+
+x_val <- x_train[val_indices,]
+partial_x_train <- x_train[-val_indices,]
+
+y_val <- one_hot_train_labels[val_indices,]
+partial_y_train = one_hot_train_labels[-val_indices,]
+
+```
+
+We are ready to train our model.
+
+```{r}
+history <- model %>% fit(
+  partial_x_train,
+  partial_y_train,
+  epochs = 20,
+  batch_size = 512,
+  validation_data = list(x_val, y_val)
+)
+plot(history)
+
+```
+
+The solution at 9 epochs appears best, and then following that overfitting emerges. Let's train the model to then, and evaluate it on the test data set.
+
+```{r}
+model <- keras_model_sequential() %>% 
+  layer_dense(units = 64, activation = "relu", input_shape = c(10000)) %>% 
+  layer_dense(units = 64, activation = "relu") %>% 
+  layer_dense(units = 46, activation = "softmax")
+  
+model %>% compile(
+  optimizer = "rmsprop",
+  loss = "categorical_crossentropy",
+  metrics = c("accuracy")
+)
+
+history <- model %>% fit(
+  partial_x_train,
+  partial_y_train,
+  epochs = 9,
+  batch_size = 512,
+  validation_data = list(x_val, y_val)
+)
+
+results <- model %>% evaluate(x_test, one_hot_test_labels)
+results
+```
+
+78% accuracy. How good is that? ""With a balanced binary classification problem, the accuracy reached by a purely random classifier would be 50%, but in our case it is closer to 18%, so our results seem pretty good, at least when compared to a random baseline" (p74) - we can calcuate that below:
+
+```{r}
+test_labels_copy <- test_labels
+test_labels_copy <- sample(test_labels_copy)
+length(which(test_labels == test_labels_copy)) / length(test_labels)
+
+```
+
+If we wanted to acquire the predictions for inputs, we would use the following code.
+
+```{r}
+predictions <- model %>% predict(x_test[1:10,]) # repdicted probabilities for all 46 outcomes
+which.max(predictions[1,]) # Class with the highest probability (first row in this case)
+
+```
+
+##Regression
+
+We can run models not just for classifying objects, but also for predicting continuous outcomes. We will explore this through predicting the median house price of homes within suburbs of Boston in the 1970s. It is different to previous data - it is small (n = 506 - 404 training and 102 test). The features (variables - 13 in total) has a different scale. Let's load the data.
+
+```{r}
+dataset <- dataset_boston_housing()
+c(c(train_data, train_targets), c(test_data, test_targets)) %<-% dataset
+
+```
+
+The different ranges of inputs will make learning more difficult (it might be able to adapt but unlikely). The best practice commonly used is to do feature-wise normalisation. Normalisation occurs through subtracting the mean of the feature from the input value, and then dividing by the standard deviation. This centers the variable producing a mean of 0 and a standard deviation of 1. 
+
+"Note that the quantities that we use for normalizing the test data have been computed using the training data. We should never use in our workflow any quantity computed on the test data, even for something as simple as data normalization." (p78)
+
+```{r}
+mean <- apply(train_data, 2, mean) # Calcuate the mean of each feature
+std <- apply(train_data, 2, sd) # Calculate the standard deviation of each feature
+train_data <- scale(train_data, center = mean, scale = std) # Scale training data
+test_data <- scale(test_data, center = mean, scale = std) # Scale test data
+
+```
+
+Because we have a small data set, you should only use a small network to minimise overfitting (which can become more prevalent with smaller data sets).
+
+```{r}
+# Because we will need to instantiate the same model multiple times, we use a function to construct it.
+build_model <- function() {
+  model <- keras_model_sequential() %>% 
+    layer_dense(units = 64, activation = "relu", input_shape = dim(train_data)[[2]]) %>% 
+    layer_dense(units = 64, activation = "relu") %>% 
+    layer_dense(units = 1) # Since no activation it will be a linear layer (i.e. no constraint on the range of values). Single output as we want a predicted median house price value.
+    
+  model %>% compile(
+    optimizer = "rmsprop", 
+    loss = "mse", # Mean squared error (square of the difference between the predicted and actual value) - widely used for these situations
+    metrics = c("mae") # Mean absolute error 
+  )
+}
+
+```
+
+Because of the data size, splitting the data into training and validation makes little sense as you might be left with even smaller samples which may lead to biased validation tests (as you may get biased samples). Rather, you should use k-fold cross-validation. Data are split into k partitions. The same model is then trained on k-1 data partitions and validated on the remaining one. This is then repeated for all combinations and an average validation score is computed.
+
+```{r}
+#k-fold validation (k=4)
+k <- 4
+indices <- sample(1:nrow(train_data))
+folds <- cut(1:length(indices), breaks = k, labels = FALSE) 
+
+num_epochs <- 100 # Number of epochs
+all_scores <- c()
+for (i in 1:k) {
+  
+  cat("processing fold #", i, "\n") # print progress
+  
+  # Prepare the validation data from partition #k
+  val_indices <- which(folds == i, arr.ind = TRUE) 
+  val_data <- train_data[val_indices,]
+  val_targets <- train_targets[val_indices]
+  
+  # Prepare the training data using data from all other partitions
+  partial_train_data <- train_data[-val_indices,]
+  partial_train_targets <- train_targets[-val_indices]
+  
+  # Build the Keras model (already compiled previously)
+  model <- build_model()
+  
+  # Train the model (in silent mode: verbose=0)
+  model %>% fit(partial_train_data, partial_train_targets,
+                epochs = num_epochs, batch_size = 1, verbose = 0)
+                
+  # Evaluate the model on the validation data
+  results <- model %>% evaluate(val_data, val_targets, verbose = 0)
+  
+  # Save each epoch score/information
+  all_scores <- c(all_scores, results$mean_absolute_error)
+  
+} 
+
+all_scores # print all values
+mean(all_scores) # print mean value
+
+```
+
+The different runs demonstrate fairly different validation scores (range 2.05-2.93 - so almost a 1000 dollar difference) reflecting the issue of relying on a single validation data set. The mean value refers to the model error - in our case we are on average $2378 off predicting the median house price for a suburb.
+
+Next we will try a longer epoch value to assess if additional training can improve model fit.
+
+```{r}
+k_clear_session() # Some memory clean-up (but will still time some time)
+
+num_epochs <- 500 # Increased number of epochs
+all_mae_histories <- NULL
+for (i in 1:k) {
+  
+  cat("processing fold #", i, "\n") # print progress
+  
+  # Prepare the validation data from partition #k
+  val_indices <- which(folds == i, arr.ind = TRUE)
+  val_data <- train_data[val_indices,]
+  val_targets <- train_targets[val_indices]
+  
+  # Prepare the training data using data from all other partitions
+  partial_train_data <- train_data[-val_indices,]
+  partial_train_targets <- train_targets[-val_indices]
+  
+  # Build the Keras model (already compiled previously)
+  model <- build_model()
+  
+  # Train the model (in silent mode: verbose=0)
+  history <- model %>% fit(
+    partial_train_data, partial_train_targets,
+    validation_data = list(val_data, val_targets), # Evaluate the model on the validation data
+    epochs = num_epochs, batch_size = 1, verbose = 0)
+  
+  # Save each epoch score/information
+  mae_history <- history$metrics$val_mean_absolute_error
+  all_mae_histories <- rbind(all_mae_histories, mae_history)
+}
+
+```
+
+Let's plot how the average MAE changed over time.=
+
+```{r}
+# Convert data
+average_mae_history <- data.frame(
+  epoch = seq(1:ncol(all_mae_histories)),
+  validation_mae = apply(all_mae_histories, 2, mean))
+
+library(ggplot2)
+ggplot(average_mae_history, aes(x = epoch, y = validation_mae)) + geom_line() # Plot
+
+```
+
+We can also smooth the data to make it easier to see the general trend.
+
+```{r}
+ggplot(average_mae_history, aes(x = epoch, y = validation_mae)) + geom_smooth()
+
+```
+
+Ok so at roughly 80 epochs the model stops improving (you can find the lowest value too by examining the data frame - 'average_mae_history[75:100,]' suggests it is 85). Once you have tuned all of the parameters (e.g. size of hidden units), you can rerun the final model and evaluate it on the test data
+
+```{r}
+# Get a fresh, compiled model
+model <- build_model()
+
+# Train it on the entirety of the data
+model %>% fit(train_data, train_targets,
+          epochs = 85, batch_size = 16, verbose = 0)
+
+result <- model %>% evaluate(test_data, test_targets)
+result
+```
+
+So mean absolite error is 2.759 - so $2759 off actual estimates. Plenty of room for improvement.
+
+##Machine learning principles
+
+### Types of machine learning
+So far we have covered supervised learning - the majority of deep learning (if not all) is this. Unsupervised training is where we do not have any known labels or targets for our data, but still wish to learn interesting insights about our data (i.e. transforming it to something meaningful). It is usually an important step before supervised learning as it allows you to understand a data set prior to classifying it. Self-supervised learning is supervised learning without any labels provided, rather they are generated based on the inputs. For example, trying to predict the next word in a sentence based on a large set of sentences and word sequences. Reinforcement learning are those models (or agents) receive information and make decisions to maximise an outcome. For example, developing a model to learn how to play a video game with no training prior.
+
+###Evaluating models
+It is important to build generalisable models so that models perform well on data never seen before. Overfitting on training data is a problem here through the creation of local models that are only applicable to their training data alone. 
+
+Always split your data into training, validation and test data. The importance of the validation data is to help tune the hyperparameters (number of layers and size of layers/units) and to distinguish them from the paramters (weights). By tuning them compared to your validation data set, it forms model learning (although be wary of overfitting to the validation data). 'Information leaks' is where things get problematic. When you begin to tune hyperparameters based on their performance on the validated data, some information will be (indirectly) 'leaked' into your model (i.e. picking up insights over what is important). Depending on the scale of the tuning, the model can start to take on a significant component of the validation data and you will be left with a model that has been overfit to the validation data (since that is what you have optimised your model on). The test data will tell you more about generalisability therefore (assuming your model has no access to any information about it).
+
+Hold out validation is where we just have a training and test data sets. This also includes a seperate validation set within the training data. It is simple, but requires large data sizes so that each partition is representative. 
+
+K-fold validation is where you split the data into k partitions of equal size. You then run the model iterative training it on k-1 partitions and evaluating it on the remaining partition. The final score is a simple average of each combination. 
+
+Iterated k-fold validation with shuffling is for when you have even smaller data sizes. You apply k-fold validation multiple times, shuffling the order of it prior to dividing into k groups. You then iterated p times which means you evaluate pxk models - this can be computationally expensive. The final score is the average across all iterations.
+
+Tips: randomly shuffle data before splitting into training and test. Sometimes data is ordered which can cause issues. That being said, if the order is preserving a time series then make sure you split to preserve it. You don't want a situation where you cannot predict the future based on the past since you have not trained the model on any past data. Finally, if there are duplicate data then exclude them from your test. Since the model will have been trained on them, you will not gain anything since your model will now what to do!
+
+###Data processing
+Inputs (and targets/labels) should be tensors of floating-point data. Data vectorisation is required to turn data into tensors. 
+
+Important to normalise data to same distribution (ideally between 0 and 1). Inputs should not be larger than the initial weight values or have different scales. These will both prevent the model from converging through creating large gradient updates. You dont have to normalise to a mean of 0 and standard deviation of 1, but it can help in situations. Always normalise the test data based on the training data so is comparable.
+
+For mising values, it is appropriate to input them as 0 as long as 0 is not meaningful values elsewhere. The network will soon learn that the value adds little information to the model and will learn to ignore it. If you train a model on data without missing data though, then when it comes to test data or new data that do contain them, it will not know what to do. It would then make sense to train the data with missing data to help it learn.
+
+Feature engineering is the user applying their own knowledge about the data to apply transformations prior to including it in the model. If the data are arbitrary then the model will not learn well. Often this is about making data simpler to understand for the model's benefit. This is more important for shallow learning algorithms than compared to deep learning. However, it is still relevant and will help you build more efficient models that require less learning or data.
+
+###Over- and under-fitting
+"The fundamental issue in machine learning is the tension between optimization and generalization." (p95)
+
+Optimising is tuning your model so that it performs best on your training data, whereas generalisability is how well a model performs on data it hasn't seen before. Optimising your model initially is correlated to generalisability. As the model seeks to minimise the loss in the training data, it will also minimise the loss of the test data. When this happens, a model is underfit since there is still room for improvement and it has not detected all patterns within the data. Eventually, generalisability improvements will stop, followed by validation improvements stopping and reversing as the model begins to overfit to the training data (i.e. through focusing on misleading patterns specific to the training data only). Deep learning models are good at fitting, but the real challenge comes in generalisation of models.
+
+The best solution to these issues is to increase your training data size. This is not always possible. If not, then you will need to regulate how much information the model can store, or what information it can store. If your network can only store a smaller amount of information, it will prioritise the most important patterns only (since they will have the greatest influence on reducing the loss). This is called regularisation. 
+
+Reducing the network size of a model is one approach for minimising overfitting since the number of parameters is linked to the number of layers and units. The number of learnable parameters is termed the model's 'capacity'. A greater number of parameters and a model can retain a greater amount of information (increasing the risk of overfitting). It is important to not make the model too small since it may end of underfitting the data (i.e. not enough capacity). This requires an interative approach by the researcher - ideally starting with low capacity, and increasing the capacity until the validation loss stops improving (or improving by a significant amount).
+
+Simpler models are less likely to overfit data than compared to more complex ones (think of the analogy Occam's razor). A simple model would be one "where the distribution of parameter values has less entropy" (p98) (i.e. fewer parameters). We can constrain the complexity of the model through making weights only be smaller values, which regulaises the distribution of the weights (weight regularisation). It works through a cost of having larger weights linked to the loss function. There are two types of costs:
+1. L1 regularization - "The cost added is proportional to the absolute value of the weight coefficients (the L1 norm of the weights)." (p98)
+2. L2 regularization (aka weight decay) - "The cost added is proportional to the square of the value of the value of the weight coefficients (the L2 norm of the weights)." (p99)
+
+In Keras, introducing regularisation is simple.
+
+```{r}
+l2_model <- keras_model_sequential() %>% 
+  layer_dense(units = 16, kernel_regularizer = regularizer_l2(0.001), # Add [0.001 multiplied by the weight coefficient] to each each coefficient. This is added during training. To add L1 - use 'regularizer_l1()'. You can also use a combination through 'regularizer_l1_l2(l1 = , l2 = )'
+              activation = "relu", input_shape = c(10000)) %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+```
+
+'Dropout' is where you randomly discard (convert to 0) some of the output features of a layer during training. The dropout rate is the proportion of output values that have been converted to 0s (typically is between 0.2 and 0.3). When the model is evaluate using the test data, dropout is not applied but the data is scaled in relation to the rate to match the lower range of values in the training data. It works through introducing noise into the data to break up any meaningless patterns that are not important yet a network may memorise.
+
+
+```{r}
+# At training time drop out 50% of the units in the output
+layer_output <- layer_output * sample(0:1, length(layer_output), replace = TRUE)
+
+# At test time
+layer_output <- layer_output * 0.5 
+
+# This process can be done in by doing both operations at training and leaving the test outputs unchanged
+layer_output <- layer_output * sample(0:1, length(layer_output), replace = TRUE) 
+
+# Note that we are scaling *up* rather scaling *down* in this case
+layer_output <- layer_output / 0.5
+
+# In Keras, you can introduce it within a network through adding after each layer (but not the output layer)
+layer_dropout(rate = 0.5) %>%
+  
+# Example
+dpt_model <- keras_model_sequential() %>% 
+  layer_dense(units = 16, activation = "relu", input_shape = c(10000)) %>% 
+  layer_dropout(rate = 0.5) %>% 
+  layer_dense(units = 16, activation = "relu") %>% 
+  layer_dropout(rate = 0.5) %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+  
+```
+
+##Advanced issues
+
+###Functional API
+
+So far we have examined models that have single inputs and outputs. This is why we used a sequential model. More complex models might have several inputs feeding into producing a single output (e.g. predicting house price via an image, text description and area characteristics), or might have several outputs (e.g. converting text from a book into it's genre and date, or predicting an individuals age, gender, SES based on tweets). Other models have graph like structures that have branching paths rather than linear ones (sometimes known as an inception module), or even have layers that feed in multiple layers (e.g. the next layer, and then the output layer so that information is not lost early on - this is known as residual connections. A sequential model is not flexible enough to incorporate such models. 
+
+The functional API provides a more flexible way of modelling. It works through breaking up the code to define each part of the model seperately.
+
+```{r}
+# A previous sequential model
+seq_model <- keras_model_sequential() %>% 
+  layer_dense(units = 16, activation = "relu", input_shape = c(10000)) %>% 
+  layer_dense(units = 16, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+# It's functional equivalent
+input_tensor <- layer_input(shape = c(10000))
+output_tensor <- input_tensor %>% 
+  layer_dense(units = 16, activation = "relu", input_shape = c(10000)) %>% 
+  layer_dense(units = 16, activation = "relu") %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+# Create model from above
+model <- keras_model(input_tensor, output_tensor)
+
+```
+
+Now we can flexibly define multi-input and multi-output models by defining them seperately. I will not go through the specifics here, it is merely to acknowledge the potential here.
+
+Model structure/typology can also be defined through using directed acyclic graphs (DAGs). They are acyclic so there cannot be any cycles (i.e. tensor x cannot become an input to a layer that generated x). Loops are only allowed with recurrent layers.
+
+Inception modules are networks that have parallel paths. They are often used so that a model can learn spatial features or additional features seperately (most commonly for image data), rather than at the same time which is less efficient. To introduce them, you would use the functional API and code each branch differently (e.g. add in kernal size) but include the same stride so that all putputs are the same size for when you join them back together.
+
+Residual connections help to tackle vanishing gradients (where there are many layers, backpropagation feedback might become lost/weak as it works its way through the layers meaning it doesn't learn) and representational bottlenecks (i.e. information that is lost early on because of low capacity). They are particualrly effective when there are more than 10 layers. It works through making the output of an early layer available to a later layer. It essentially sums together the earlier output with the later one (need to be the same size - if not then use a linear transformation to convert). 
+
+Layers can also be resused multiple times. Here you reuse the weights again (this is called layer weight sharing). This is important when you have several branches but wish to share information. This is particualrly important where you have multiple inputs of the same data type (e.g. two text sources) since the weights to predict the outcome will have the same information.
+
+The functional API also allows you to call models within models (think of replacing a layer command with a call to a model).
+
+###TensorBoard
+
+We can also dive deeper into the training processes to understand what is going on. So far we have just arbitrarily set a number of epochs and then refined later if we detect overfitting. A more efficient approach would be to stop training once the validation loss stopped improving. In Keras, we can do this using 'callback' - an object that assesses the model at different stges and evaluates progress. It can save weights at each point of model development [callback_model_checkpoint()], stop it early if it is not improving [callback_early_stopping()], adjust parameters (e.g. learning rate of optimser) [callback_learning_rate_scheduler() or callback_reduce_lr_on_plateau()], and apply different metrics which are updated in a graph during training (which we have seen in action before!) [callback_model_csv_logger().
+
+Let's have a look at the code in action.
+
+```{r}
+callbacks_list <- list( # List all callbacks - can be singular or multiple
+  callback_early_stopping( # Stop training when model improvements stop
+    monitor = "acc", # Monitor the model accuracy
+    patience = 1 # Interrupt model when it has failed to improve for more than 1 epoch
+  ),
+  callback_model_checkpoint( # Save weights after each epoch
+    filepath = "./my_model.h5", # Where to save to
+    monitor = "val_loss", # Asses using validation loss 
+    save_best_only = TRUE # Do not overwrite unless the monitor above has improved
+  )
+)
+
+model %>% compile(
+    optimizer = "rmsprop", 
+    loss = "binary_crossentropy", 
+    metrics = c("acc") # make sure is same as in callbacks
+  )
+
+model %>% fit(
+  train_images, train_labels, 
+  epochs = 10, 
+  batch_size = 32
+  callbacks = callbacks_list, # Call it here
+  validation_data = list(x_val, y_val) # Since the callback monitors the validation loss and accuracy, you need to include it here during the fit
+)
+
+```
+
+Fairly simple. Here is another example looking at reducing the learning rate where validation loss stops improving (you can also increase it). This can be effective when a model becomes stuck in a local minima during training.
+
+```{r}
+callbacks_list <- list( # List all callbacks - can be singular or multiple
+  callback_reduce_lr_on_plateau( # Reduce learning rate where validation loss stops improving
+    monitor = "val_loss", # Monitor the validation loss
+    factor = 0.1, # Divide learning rate by 10 (or multiple by 0.1) when conditions are met
+    patience = 10 # Interrupt model when it has failed to improve for more than 10 epochs
+  )
+)
+
+model %>% fit(
+  train_images, train_labels, 
+  epochs = 10, 
+  batch_size = 32
+  callbacks = callbacks_list, # Call it here
+  validation_data = list(x_val, y_val) # Since the callback monitors the validation loss and accuracy, you need to include it here during the fit
+)
+```
+
+Frequent feedback will help us to build effective models, and understand how changes to our models impact them. Model development is an iterative process. While Keras helps with assessing model performance, but for understanding what the results mean we can use TensorBoard. It is useful for visualising any metrics being monitored during training (especially when have multiple), as well as model architecture. 
+
+```{r}
+dir.create("./my_log_dir") # To store log files
+tensorboard("./my_log_dir") # Launch TensoBoard and display data recorded at directory as appears
+
+callbacks <- list(
+  callback_tensorboard(
+    log_dir = "./my_log_dir",
+    histogram_freq = 1, # For each 1 epoch, recprd activation histogram
+    embeddings_freq = 1 # For each 1 epoch, record embedding data (example in book for text data so maybe not needed)
+  )
+)
+
+# The insert callbacks in model fit as normal
+
+```
+
+TensorBoard will open in a web browser and will update in real time. The scalars tab allows you to assess model performance, histograms tab show the activation values taken by layers, the graphs tab displays your model network structure.
+
+###Batch normalisation 
+
+Normalisation seeks to make data comparable through similar distributions and scales. The previous one we covered assumes that our data are normally distributed. We normalised our input data before running the model, however since each layer produces as new set of inputs and transformations, it makes sense to normalise this too as it might not follow the original inputs. Batch normalisation occurs after each layer using 'layer_batch_normalization()' after each layer (i.e. 'layer_dense() %>% layer_batch_normalization()'). It maintains an exponential moving average of the mean and variance during training (i.e. between batches). This helps gradient propagation and can allow for preservation of information and therefore deeper networks. Recently it has been proposed that 'batch renomalization or 'self-normalising neural networks' may offer improvements, although little evaluation has been done on them so far
+
+
